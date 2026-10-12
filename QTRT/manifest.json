@@ -1,8 +1,8 @@
 {
   "id": "quicktranslate",
   "name": "Quick Translate",
-  "description": "Translate messages and your own text with Google Translate, using Rain-native controls.",
-  "version": "1.3.0",
+  "description": "Translate messages and your own text with Rain-native controls.",
+  "version": "1.4.0",
   "authors": [
     "dariussbezy"
   ],
