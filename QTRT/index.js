@@ -3,18 +3,15 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const { findAssetId } = rain.api.assets;
 const { after, before, instead } = rain.api.patcher;
 const { createPluginStore } = rain.api.storage;
-const { Search, SettingsTextInput } = rain.api.ui.components;
 const { showToast } = rain.api.ui.toasts;
 const { findInReactTree } = rain.utils;
 const { findByName, findByProps, findByStoreName, findByTypeDisplayName } = rain.metro;
 const { clipboard, FluxDispatcher, NavigationNative, React, ReactNative: RN } = rain.metro.common;
-const { AlertActionButton, AlertActions, AlertModal, Button, Stack, TableCheckboxRow, TableRow, TableRowGroup, TableSwitchRow } = rain.metro.common.components;
-const { openAlert, dismissAlert } = rain.api.ui.alerts;
 const { ChannelStore, MessageStore, SelectedChannelStore, UserStore } = rain.metro.common.stores;
 /* ------------------------------------------------------------------ */
 /* constants + settings store                                          */
 /* ------------------------------------------------------------------ */
-const BUILD = "v1.4.0-rain";
+const BUILD = "v1.5.0-rain";
 const FLAG_TOGGLE = 0x04000000;
 const ACCENT = "#8EA1FF";
 const MAX_TRANSLATIONS = 300;
@@ -52,8 +49,7 @@ const { useStore: useQuickTranslate, settings: qt } = createPluginStore("quicktr
     showButton: true,
     translateOnSend: false,
     keepArmed: false,
-    hideExtras: true,
-    reclaim: true,
+    hideGiftButton: false,
     anchor: "actions",
     favLangs: ["en", "es", "fr", "de", "ro", "ru"],
 });
@@ -103,6 +99,32 @@ function palette() {
         : { text: "#FFFFFF", sub: "#B5BAC1", bg: "#1E1F22", card: "#2B2D31", blurple: "#5865F2", card2: "rgba(255,255,255,0.06)", chip: "rgba(255,255,255,0.10)", press: "rgba(255,255,255,0.07)", off: "#4E5058" };
 }
 const translationColor = () => (HEX.test(String(qt.translationColor || "")) ? String(qt.translationColor).toUpperCase() : ACCENT);
+function CustomSection(props) {
+    const h = React.createElement;
+    const C = palette();
+    return h(RN.View, { style: { marginBottom: 22 } }, h(RN.Text, { style: { color: C.sub, fontSize: 13, fontWeight: "700", letterSpacing: 0.4, marginHorizontal: 5, marginBottom: 9, textTransform: "uppercase" } }, props.title), h(RN.View, { style: { backgroundColor: C.card, borderRadius: 17, overflow: "hidden", borderWidth: 1, borderColor: C.card2 } }, props.children));
+}
+function CustomRow(props) {
+    const h = React.createElement;
+    const C = palette();
+    return h(RN.Pressable, { onPress: props.onPress, disabled: !props.onPress, style: ({ pressed }) => ({ minHeight: 58, paddingHorizontal: 15, paddingVertical: 12, flexDirection: "row", alignItems: "center", backgroundColor: pressed ? C.press : "transparent" }) }, props.icon ? h(RN.Text, { style: { width: 30, fontSize: 18, color: C.sub, marginRight: 7 } }, props.icon) : null, h(RN.View, { style: { flex: 1, minWidth: 0, paddingRight: 8 } }, h(RN.Text, { numberOfLines: 1, style: { color: C.text, fontSize: 16, fontWeight: "600" } }, props.title), props.subtitle ? h(RN.Text, { numberOfLines: 2, style: { color: C.sub, fontSize: 13, marginTop: 3, lineHeight: 18 } }, props.subtitle) : null), props.trailing || null, !props.last ? h(RN.View, { style: { position: "absolute", bottom: 0, left: props.icon ? 52 : 15, right: 0, height: 1, backgroundColor: C.card2 } }) : null);
+}
+function CustomSwitch(props) {
+    const h = React.createElement;
+    const C = palette();
+    const on = !!props.value;
+    return h(RN.Pressable, { accessibilityRole: "switch", accessibilityState: { checked: on }, onPress: () => props.onChange(!on), hitSlop: 8, style: { width: 48, height: 29, borderRadius: 16, padding: 3, justifyContent: "center", backgroundColor: on ? C.blurple : C.off } }, h(RN.View, { style: { width: 23, height: 23, borderRadius: 12, backgroundColor: "#FFFFFF", alignSelf: on ? "flex-end" : "flex-start", elevation: 1 } }));
+}
+function CustomAction(props) {
+    const h = React.createElement;
+    const C = palette();
+    return h(RN.Pressable, { onPress: props.onPress, disabled: props.disabled, style: ({ pressed }) => ({ minHeight: 48, borderRadius: 13, alignItems: "center", justifyContent: "center", paddingHorizontal: 16, marginTop: 9, backgroundColor: props.secondary ? C.chip : C.blurple, opacity: props.disabled ? 0.45 : pressed ? 0.75 : 1 }) }, h(RN.Text, { style: { color: "#FFFFFF", fontWeight: "700", fontSize: 16 } }, props.title));
+}
+function CustomInput(props) {
+    const h = React.createElement;
+    const C = palette();
+    return h(RN.TextInput, { ...props, placeholderTextColor: C.sub, style: [{ minHeight: 48, borderRadius: 13, borderWidth: 1, borderColor: C.off, backgroundColor: C.bg, color: C.text, paddingHorizontal: 14, fontSize: 16 }, props.style] });
+}
 function copyText(text) {
     try {
         clipboard.setString(text);
@@ -630,11 +652,13 @@ function TranslateButton() {
     const [target, setTarget] = React.useState(settings.targetOut || "en");
     const [query, setQuery] = React.useState("");
     const didLongPress = React.useRef(false);
+    const pressTimer = React.useRef(null);
     const [, tick] = React.useState(0);
     React.useEffect(() => {
         const f = () => tick((x) => x + 1);
         buttonListeners.add(f);
-        return () => { buttonListeners.delete(f); };
+        return () => { buttonListeners.delete(f); if (pressTimer.current)
+            clearTimeout(pressTimer.current); };
     }, []);
     if (settings.showButton === false)
         return null;
@@ -683,6 +707,30 @@ function TranslateButton() {
         setPanelPage("main");
         setPanelOpen(true);
     };
+    const startPress = () => {
+        didLongPress.current = false;
+        if (pressTimer.current)
+            clearTimeout(pressTimer.current);
+        pressTimer.current = setTimeout(() => {
+            pressTimer.current = null;
+            openPanel();
+        }, 450);
+    };
+    const finishPress = () => {
+        if (pressTimer.current) {
+            clearTimeout(pressTimer.current);
+            pressTimer.current = null;
+        }
+        if (!didLongPress.current)
+            onPress();
+        didLongPress.current = false;
+    };
+    const cancelPress = () => {
+        if (pressTimer.current)
+            clearTimeout(pressTimer.current);
+        pressTimer.current = null;
+        didLongPress.current = false;
+    };
     const closePanel = () => {
         setPanelOpen(false);
         setPanelPage("main");
@@ -697,63 +745,46 @@ function TranslateButton() {
         ? [
             h(RN.Text, { key: "title", style: { color: paletteNow.text, fontSize: 22, fontWeight: "700", marginBottom: 4 } }, "Translate once"),
             h(RN.Text, { key: "hint", style: { color: paletteNow.sub, fontSize: 14, marginBottom: 16 } }, "Choose languages for this message only."),
-            h(TableRowGroup, { key: "languages", title: "Languages" }, h(TableRow, { label: "From", subLabel: langName(source), trailing: () => h(TableRow.Arrow), onPress: () => { setQuery(""); setPanelPage("source"); } }), h(TableRow, { label: "To", subLabel: langName(target), trailing: () => h(TableRow.Arrow), onPress: () => { setQuery(""); setPanelPage("target"); } })),
+            h(CustomSection, { key: "languages", title: "Languages" }, h(CustomRow, { title: "Translate from", subtitle: langName(source), icon: "↗", onPress: () => { setQuery(""); setPanelPage("source"); }, trailing: h(RN.Text, { style: { color: paletteNow.sub, fontSize: 20 } }, "›") }), h(CustomRow, { title: "Translate to", subtitle: langName(target), icon: "↙", last: true, onPress: () => { setQuery(""); setPanelPage("target"); }, trailing: h(RN.Text, { style: { color: paletteNow.sub, fontSize: 20 } }, "›") })),
             favorites.length ? h(RN.ScrollView, { key: "favorites", horizontal: true, showsHorizontalScrollIndicator: false, style: { marginTop: 12, marginBottom: 8 } }, ...favorites.map((code) => h(RN.Pressable, {
                 key: code,
                 onPress: () => setTarget(code),
                 style: { paddingHorizontal: 14, paddingVertical: 9, borderRadius: 18, marginRight: 8, backgroundColor: code === target ? paletteNow.blurple : paletteNow.chip },
             }, h(RN.Text, { style: { color: paletteNow.text, fontSize: 14, fontWeight: "600" } }, langName(code))))) : null,
-            h(Button, { key: "translate", text: busy ? "Translating…" : "Translate", variant: "primary", disabled: busy, onPress: () => { closePanel(); run(target, source); } }),
-            lastOriginal != null ? h(Button, { key: "restore", text: "Restore original text", variant: "secondary", onPress: () => { closePanel(); restoreOriginal(); } }) : null,
-            h(Button, { key: "close", text: "Close", variant: "secondary", onPress: closePanel }),
+            h(CustomAction, { key: "translate", title: busy ? "Translating…" : "Translate", disabled: busy, onPress: () => { closePanel(); run(target, source); } }),
+            lastOriginal != null ? h(CustomAction, { key: "restore", title: "Restore original text", secondary: true, onPress: () => { closePanel(); restoreOriginal(); } }) : null,
+            h(CustomAction, { key: "close", title: "Close", secondary: true, onPress: closePanel }),
         ]
         : [
-            h(Button, { key: "back", text: "‹  Back", variant: "secondary", onPress: () => { setPanelPage("main"); setQuery(""); } }),
-            h(Search, { key: "search", style: { paddingVertical: 12 }, placeholder: "Search language", onChangeText: setQuery, isRound: false }),
-            h(RN.ScrollView, { key: "list", style: { maxHeight: 360 }, keyboardShouldPersistTaps: "handled" }, h(TableRowGroup, { title: panelPage === "source" ? "Translate from" : "Translate to" }, ...languageOptions.map(([code, label]) => h(TableRow, {
-                key: code,
-                label,
-                subLabel: code,
-                trailing: (panelPage === "source" ? source : target) === code
-                    ? () => h(RN.Text, { style: { color: paletteNow.blurple, fontWeight: "600" } }, "Selected")
-                    : undefined,
-                onPress: () => {
-                    if (panelPage === "source")
-                        setSource(code);
-                    else
-                        setTarget(code);
-                    setPanelPage("main");
-                    setQuery("");
-                },
-            })))),
+            h(CustomAction, { key: "back", title: "‹  Back", secondary: true, onPress: () => { setPanelPage("main"); setQuery(""); } }),
+            h(CustomInput, { key: "search", style: { marginVertical: 12 }, value: query, placeholder: "Search language", onChangeText: setQuery, autoCorrect: false }),
+            h(RN.ScrollView, { key: "list", style: { maxHeight: 360 }, keyboardShouldPersistTaps: "handled" }, h(CustomSection, { title: panelPage === "source" ? "Translate from" : "Translate to" }, ...languageOptions.map(([code, label], index) => h(CustomRow, { key: code, title: label, subtitle: code,
+                trailing: (panelPage === "source" ? source : target) === code ? h(RN.Text, { style: { color: paletteNow.blurple, fontWeight: "700" } }, "✓") : null,
+                last: index === languageOptions.length - 1,
+                onPress: () => { if (panelPage === "source")
+                    setSource(code);
+                else
+                    setTarget(code); setPanelPage("main"); setQuery(""); } })))),
         ];
-    return h(RN.View, { style: { marginRight: 6 } }, h(RN.Pressable, {
-        onPress,
-        onPressIn: () => { didLongPress.current = false; },
-        onLongPress: openPanel,
-        delayLongPress: 350,
+    return h(RN.View, { pointerEvents: "box-none", collapsable: false, style: { marginRight: 4, zIndex: 10, elevation: 10 } }, h(RN.View, {
+        onStartShouldSetResponder: () => !busy,
+        onResponderTerminationRequest: () => false,
+        onResponderGrant: startPress,
+        onResponderRelease: finishPress,
+        onResponderTerminate: cancelPress,
+        hitSlop: 10,
+        pressRetentionOffset: { top: 18, bottom: 18, left: 18, right: 18 },
+        pointerEvents: "auto",
+        collapsable: false,
         accessibilityRole: "button",
         accessibilityLabel: "Translate message",
-        accessibilityHint: "Long press to choose languages and translate once",
-        disabled: busy,
-        style: { width: 40, height: 40, backgroundColor: "transparent", alignItems: "center", justifyContent: "center", opacity: busy ? 0.5 : 1 },
-    }, icon), panelOpen ? h(RN.Modal, { visible: true, transparent: true, animationType: "slide", onRequestClose: closePanel }, h(RN.Pressable, { style: { flex: 1, backgroundColor: "rgba(0,0,0,0.52)", justifyContent: "flex-end" }, onPress: closePanel }, h(RN.View, {
+        accessibilityHint: "Tap to translate; hold to choose languages",
+        accessibilityActions: [{ name: "activate", label: "Translate" }],
+        onAccessibilityTap: onPress,
+        style: { width: 44, height: 44, backgroundColor: "transparent", alignItems: "center", justifyContent: "center", opacity: busy ? 0.5 : 1 },
+    }, icon), panelOpen ? h(RN.Modal, { visible: true, transparent: true, animationType: "slide", onRequestClose: closePanel }, h(RN.View, { style: { flex: 1, justifyContent: "flex-end" } }, h(RN.Pressable, { style: { position: "absolute", top: 0, bottom: 0, left: 0, right: 0, backgroundColor: "rgba(0,0,0,0.52)" }, onPress: closePanel }), h(RN.View, {
         style: { maxHeight: "88%", backgroundColor: paletteNow.bg, borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingHorizontal: 16, paddingTop: 14, paddingBottom: 28 },
-        onStartShouldSetResponder: () => true,
-        onTouchEnd: (event) => event.stopPropagation(),
     }, h(RN.View, { style: { alignSelf: "center", width: 38, height: 5, borderRadius: 3, backgroundColor: paletteNow.off, marginBottom: 16 } }), panelPage === "main" ? panelBody : h(RN.ScrollView, { keyboardShouldPersistTaps: "handled" }, ...panelBody)))) : null);
-}
-function ReclaimWrap(props) {
-    const [natural, setNatural] = React.useState(0);
-    const width = natural > 0 ? Math.max(natural - 96, Math.min(natural, 48)) : undefined;
-    return React.createElement(RN.View, { style: { flexShrink: 0, flexGrow: 0, alignSelf: props.align, width } }, React.createElement(RN.View, {
-        onLayout: (event) => {
-            const measured = Math.round(event.nativeEvent.layout.width);
-            if (measured !== natural)
-                setNatural(measured);
-        },
-        style: { flexShrink: 0, alignSelf: "flex-start" },
-    }, props.children));
 }
 function patchChatButton() {
     const h = React.createElement;
@@ -764,10 +795,8 @@ function patchChatButton() {
         if (!component?.type)
             continue;
         unpatches.push(before("render", component.type, ([props]) => {
-            if (!props || !qt.hideExtras)
+            if (!props || !qt.hideGiftButton)
                 return;
-            if ("isAppLauncherEnabled" in props)
-                props.isAppLauncherEnabled = false;
             props.shouldShowGiftButton = false;
         }));
     }
@@ -775,21 +804,15 @@ function patchChatButton() {
         unpatches.push(after("render", actions.type, (_, ret) => {
             if (!ret)
                 return ret;
-            let output = ret;
-            if (qt.anchor === "actions" && qt.showButton !== false) {
-                output = h(RN.View, { style: { flexDirection: "row", alignItems: "center" } }, ret, h(TranslateButton, { key: "qt-button" }));
-            }
-            if (qt.hideExtras && qt.reclaim) {
-                const style = safe(() => RN.StyleSheet.flatten(ret.props?.style), null);
-                output = h(ReclaimWrap, { align: style?.alignSelf }, output);
-            }
-            return output;
+            if (qt.anchor !== "actions" || qt.showButton === false)
+                return ret;
+            return h(RN.View, { pointerEvents: "box-none", collapsable: false, style: { flexDirection: "row", alignItems: "center", overflow: "visible" } }, ret, h(TranslateButton, { key: "qt-button" }));
         }));
     if (sendButton?.type)
         unpatches.push(after("render", sendButton.type, (_, ret) => {
             if (!ret || qt.anchor !== "send" || qt.showButton === false)
                 return ret;
-            return h(RN.View, { style: { flexDirection: "row", alignItems: "center" } }, h(TranslateButton, { key: "qt-button" }), ret);
+            return h(RN.View, { pointerEvents: "box-none", collapsable: false, style: { flexDirection: "row", alignItems: "center", overflow: "visible" } }, h(TranslateButton, { key: "qt-button" }), ret);
         }));
 }
 function LangPicker(props) {
@@ -804,15 +827,9 @@ function LangPicker(props) {
         settings.updateSettings({ [props.field]: code });
         navigation.goBack();
     };
-    return h(RN.ScrollView, { style: { flex: 1 }, contentContainerStyle: { paddingBottom: 38 } }, h(Search, { style: { padding: 15 }, placeholder: "Search language", onChangeText: setQuery, isRound: false }), h(Stack, { style: { paddingHorizontal: 12 }, spacing: 24 }, h(TableRowGroup, { title: "Languages" }, ...list.map(([code, label]) => h(TableRow, {
-        key: code,
-        label,
-        subLabel: code,
-        trailing: settings[props.field] === code
-            ? () => h(RN.Text, { style: { color: palette().blurple, fontWeight: "600" } }, "Selected")
-            : undefined,
-        onPress: () => choose(code),
-    })))));
+    return h(RN.ScrollView, { style: { flex: 1 }, keyboardShouldPersistTaps: "handled", contentContainerStyle: { padding: 16, paddingBottom: 40 } }, h(CustomInput, { value: query, placeholder: "Search language", onChangeText: setQuery, autoCorrect: false, style: { marginBottom: 18 } }), h(CustomSection, { title: "Languages" }, ...list.map(([code, label], index) => h(CustomRow, { key: code, title: label, subtitle: code, last: index === list.length - 1,
+        trailing: settings[props.field] === code ? h(RN.Text, { style: { color: palette().blurple, fontWeight: "700", fontSize: 18 } }, "✓") : null,
+        onPress: () => choose(code) }))));
 }
 function FavPicker() {
     const h = React.createElement;
@@ -821,10 +838,10 @@ function FavPicker() {
     const q = query.trim().toLowerCase();
     const favs = settings.favLangs || [];
     const list = LANGS.filter(([c, n]) => !q || n.toLowerCase().includes(q) || c.toLowerCase().includes(q));
-    return h(RN.ScrollView, { style: { flex: 1 }, contentContainerStyle: { paddingBottom: 38 } }, h(Search, { style: { padding: 15 }, placeholder: "Search language", onChangeText: setQuery, isRound: false }), h(Stack, { style: { paddingHorizontal: 12 }, spacing: 24 }, h(TableRowGroup, { title: "Pick up to " + MAX_FAVS }, ...list.map(([code, label]) => {
+    return h(RN.ScrollView, { style: { flex: 1 }, keyboardShouldPersistTaps: "handled", contentContainerStyle: { padding: 16, paddingBottom: 40 } }, h(CustomInput, { value: query, placeholder: "Search language", onChangeText: setQuery, autoCorrect: false, style: { marginBottom: 18 } }), h(RN.Text, { style: { color: palette().sub, marginBottom: 12, fontSize: 14 } }, favs.length + " of " + MAX_FAVS + " quick languages selected"), h(CustomSection, { title: "Choose quick languages" }, ...list.map(([code, label], index) => {
         const on = favs.includes(code);
-        return h(TableCheckboxRow, {
-            key: code, label, subLabel: code, checked: on,
+        return h(CustomRow, { key: code, title: label, subtitle: code, last: index === list.length - 1,
+            trailing: h(RN.View, { style: { width: 24, height: 24, borderRadius: 7, borderWidth: 1.5, borderColor: on ? palette().blurple : palette().off, backgroundColor: on ? palette().blurple : "transparent", alignItems: "center", justifyContent: "center" } }, on ? h(RN.Text, { style: { color: "#FFFFFF", fontWeight: "800" } }, "✓") : null),
             onPress: () => {
                 if (on)
                     settings.updateSettings({ favLangs: favs.filter(x => x !== code) });
@@ -832,50 +849,29 @@ function FavPicker() {
                     settings.updateSettings({ favLangs: favs.concat([code]) });
                 else
                     toast("You can pick up to " + MAX_FAVS);
-            },
-        });
-    }))));
+            } });
+    })));
 }
 function ColorPicker() {
     const h = React.createElement;
     const settings = useQuickTranslate();
+    const navigation = NavigationNative.useNavigation();
     const [value, setValue] = React.useState(String(settings.translationColor || ACCENT).toUpperCase());
     const [error, setError] = React.useState("");
     const colors = palette();
     const save = (hex) => {
         settings.updateSettings({ translationColor: hex });
         refreshTranslated();
-        dismissAlert("quicktranslate-color");
+        navigation.goBack();
     };
     const valid = HEX.test(value.trim());
     const preview = valid ? value.trim().toUpperCase() : "transparent";
-    return h(AlertModal, {
-        title: "Translation color",
-        content: "Choose a preset or enter a HEX color.",
-        extraContent: h(RN.View, { style: { gap: 12 } }, h(RN.View, { style: { flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 4 } }, h(RN.View, { style: { width: 26, height: 26, borderRadius: 13, backgroundColor: preview, borderWidth: 1, borderColor: colors.off } }), h(RN.Text, { style: { color: colors.text, fontWeight: "600" } }, valid ? value.trim().toUpperCase() : "Enter a valid HEX color")), h(RN.ScrollView, { style: { maxHeight: 380 }, keyboardShouldPersistTaps: "handled" }, h(TableRowGroup, { title: "Basic colors" }, ...COLOR_PRESETS.map(([label, hex]) => h(TableRow, {
-            key: hex,
-            label,
-            subLabel: hex,
-            icon: h(RN.View, { style: { width: 20, height: 20, borderRadius: 10, backgroundColor: hex } }),
-            trailing: value.trim().toUpperCase() === hex
-                ? () => h(RN.Text, { style: { color: colors.blurple, fontWeight: "600" } }, "Selected")
-                : undefined,
-            onPress: () => { setValue(hex); setError(""); },
-        }))), h(TableRowGroup, { title: "Custom HEX" }, h(SettingsTextInput, {
-            placeholder: "#3366FF",
-            value,
-            autoCapitalize: "characters",
-            onChange: (next) => { setValue(next); setError(""); },
-        })), error ? h(RN.Text, { style: { color: "#ED4245", paddingHorizontal: 12 } }, error) : null)),
-        actions: h(AlertActions, null, h(AlertActionButton, { text: "Default", variant: "secondary", onPress: () => save(ACCENT) }), h(AlertActionButton, { text: "Cancel", variant: "secondary", onPress: () => dismissAlert("quicktranslate-color") }), h(AlertActionButton, { text: "Save", variant: "primary", disabled: !valid, onPress: () => {
-                const hex = value.trim().toUpperCase();
-                if (!HEX.test(hex)) {
-                    setError("Enter a HEX color such as #3366FF.");
-                    return;
-                }
-                save(hex);
-            } })),
-    });
+    return h(RN.ScrollView, { style: { flex: 1 }, keyboardShouldPersistTaps: "handled", contentContainerStyle: { padding: 16, paddingBottom: 40 } }, h(RN.Text, { style: { color: colors.text, fontSize: 20, fontWeight: "700", marginBottom: 6 } }, "Translation color"), h(RN.Text, { style: { color: colors.sub, fontSize: 14, marginBottom: 16 } }, "Choose a preset or enter a HEX color."), h(CustomSection, { title: "Preview" }, h(RN.View, { style: { minHeight: 62, flexDirection: "row", alignItems: "center", paddingHorizontal: 15, gap: 12 } }, h(RN.View, { style: { width: 30, height: 30, borderRadius: 15, backgroundColor: preview, borderWidth: 1, borderColor: colors.off } }), h(RN.Text, { style: { color: colors.text, fontWeight: "700", fontSize: 16 } }, valid ? value.trim().toUpperCase() : "Enter a valid HEX color"))), h(CustomSection, { title: "Color presets" }, ...COLOR_PRESETS.map(([label, hex], index) => h(CustomRow, { key: hex, title: label, subtitle: hex, last: index === COLOR_PRESETS.length - 1,
+        trailing: h(RN.View, { style: { flexDirection: "row", alignItems: "center", gap: 10, marginRight: 6 } }, h(RN.View, { style: { width: 20, height: 20, borderRadius: 10, backgroundColor: hex } }), value.trim().toUpperCase() === hex ? h(RN.Text, { style: { color: colors.blurple, fontWeight: "800", width: 18, textAlign: "center" } }, "✓") : h(RN.View, { style: { width: 18 } })),
+        onPress: () => { setValue(hex); setError(""); } }))), h(CustomSection, { title: "Custom HEX" }, h(RN.View, { style: { padding: 14 } }, h(CustomInput, { value, placeholder: "#3366FF", autoCapitalize: "characters", autoCorrect: false, onChangeText: (next) => { setValue(next); setError(""); } }))), error ? h(RN.Text, { style: { color: "#ED4245", marginVertical: 8 } }, error) : null, h(CustomAction, { title: "Save color", disabled: !valid, onPress: () => { const hex = value.trim().toUpperCase(); if (!HEX.test(hex)) {
+            setError("Enter a HEX color such as #3366FF.");
+            return;
+        } save(hex); } }), h(CustomAction, { title: "Use default", secondary: true, onPress: () => save(ACCENT) }));
 }
 const TargetOutPage = () => React.createElement(LangPicker, { field: "targetOut" });
 const SourceOutPage = () => React.createElement(LangPicker, { field: "sourceOut" });
@@ -884,64 +880,12 @@ function Settings() {
     const h = React.createElement;
     const navigation = NavigationNative.useNavigation();
     const settings = useQuickTranslate();
-    const langIcon = h(TableRow.Icon, { source: findAssetId("LanguageIcon") });
     const go = (title, render) => navigation.push("RAIN_CUSTOM_PAGE", { title, render });
-    const arrow = () => h(TableRow.Arrow, null);
-    const openColor = () => openAlert("quicktranslate-color", h(ColorPicker));
-    const toggleAnchor = () => {
-        const anchor = settings.anchor === "send" ? "actions" : "send";
-        settings.updateSettings({ anchor });
-        notifyButton();
-    };
-    return h(RN.ScrollView, { style: { flex: 1 }, contentContainerStyle: { paddingBottom: 38 } }, h(Stack, { style: { paddingVertical: 24, paddingHorizontal: 12 }, spacing: 24 }, h(TableRowGroup, { title: "Languages" }, h(TableRow, { label: "Translate my messages to", subLabel: langName(settings.targetOut), icon: langIcon, trailing: arrow, onPress: () => go("Translate my messages to", TargetOutPage) }), h(TableRow, { label: "My messages are written in", subLabel: langName(settings.sourceOut), icon: langIcon, trailing: arrow, onPress: () => go("My messages are written in", SourceOutPage) }), h(TableRow, { label: "Translate messages to", subLabel: langName(settings.targetIn), icon: langIcon, trailing: arrow, onPress: () => go("Translate messages to", TargetInPage) }), h(TableRow, { label: "Quick languages", subLabel: (settings.favLangs || []).length + " selected", icon: langIcon, trailing: arrow, onPress: () => go("Quick languages", FavPicker) })), h(TableRowGroup, { title: "Display" }, h(TableSwitchRow, {
-        label: "Immersive translation",
-        subLabel: "Show the translation below the original message. Off replaces the original text",
-        value: !!settings.immersive,
-        onValueChange: (v) => { settings.updateSettings({ immersive: v }); refreshTranslated(); },
-    }), h(TableRow, {
-        label: "Translation color",
-        subLabel: translationColor(),
-        icon: h(RN.View, { style: { width: 18, height: 18, borderRadius: 9, backgroundColor: translationColor() } }),
-        trailing: arrow,
-        onPress: openColor,
-    })), h(TableRowGroup, { title: "Chat composer" }, h(TableSwitchRow, {
-        label: "Show translate button in chat box",
-        subLabel: "Turn off to only translate from the message long-press menu. Restart Discord to apply",
-        value: settings.showButton !== false,
-        onValueChange: (v) => { settings.updateSettings({ showButton: v }); notifyButton(); },
-    }), h(TableSwitchRow, {
-        label: "Translate on send",
-        subLabel: "Translate every message right before it is sent",
-        value: !!settings.translateOnSend,
-        onValueChange: (v) => { settings.updateSettings({ translateOnSend: v }); notifyButton(); },
-    }), h(TableSwitchRow, {
-        label: "Keep translate button active",
-        subLabel: "Tapping the button keeps translation on until you tap it again",
-        value: !!settings.keepArmed,
-        onValueChange: (v) => { settings.updateSettings({ keepArmed: v }); notifyButton(); },
-    }), h(TableRow, {
-        label: "Button position",
-        subLabel: settings.anchor === "send" ? "Next to the Send button" : "Next to the + button",
-        trailing: arrow,
-        onPress: toggleAnchor,
-    }), h(TableSwitchRow, {
-        label: "Hide Gift and Apps buttons",
-        subLabel: "Removes both buttons from the chat composer. Restart Discord to apply",
-        value: settings.hideExtras !== false,
-        onValueChange: (v) => {
-            settings.updateSettings({ hideExtras: v });
-            toast("Restart Discord to apply this setting");
-        },
-    }), h(TableSwitchRow, {
-        label: "Expand composer over hidden buttons",
-        subLabel: "Use the space freed by the Gift and Apps buttons. Restart Discord to apply",
-        value: settings.reclaim !== false,
-        disabled: settings.hideExtras === false,
-        onValueChange: (v) => {
-            settings.updateSettings({ reclaim: v });
-            toast("Restart Discord to apply this setting");
-        },
-    })), h(RN.Text, { style: { color: palette().sub, fontSize: 13, paddingHorizontal: 4 } }, "Build " + BUILD)));
+    const C = palette();
+    const toggle = (title, subtitle, value, change) => h(CustomRow, {
+        title, subtitle, trailing: h(CustomSwitch, { value, onChange: change }),
+    });
+    return h(RN.ScrollView, { style: { flex: 1 }, contentContainerStyle: { padding: 16, paddingBottom: 42 } }, h(RN.Text, { style: { color: C.text, fontSize: 24, fontWeight: "800", marginBottom: 5 } }, "QuickTranslate"), h(RN.Text, { style: { color: C.sub, fontSize: 14, marginBottom: 23 } }, "Translation preferences for Rain"), h(CustomSection, { title: "Languages" }, h(CustomRow, { title: "Translate my messages to", subtitle: langName(settings.targetOut), icon: "↗", trailing: h(RN.Text, { style: { color: C.sub, fontSize: 21 } }, "›"), onPress: () => go("Translate my messages to", TargetOutPage) }), h(CustomRow, { title: "My messages are written in", subtitle: langName(settings.sourceOut), icon: "↙", trailing: h(RN.Text, { style: { color: C.sub, fontSize: 21 } }, "›"), onPress: () => go("My messages are written in", SourceOutPage) }), h(CustomRow, { title: "Translate messages to", subtitle: langName(settings.targetIn), icon: "文", trailing: h(RN.Text, { style: { color: C.sub, fontSize: 21 } }, "›"), onPress: () => go("Translate messages to", TargetInPage) }), h(CustomRow, { title: "Quick languages", subtitle: (settings.favLangs || []).length + " of " + MAX_FAVS + " selected", icon: "★", last: true, trailing: h(RN.Text, { style: { color: C.sub, fontSize: 21 } }, "›"), onPress: () => go("Quick languages", FavPicker) })), h(CustomSection, { title: "Appearance" }, toggle("Immersive translation", "Show the translation below the original message. Turn off to replace its text.", !!settings.immersive, (v) => { settings.updateSettings({ immersive: v }); refreshTranslated(); }), h(CustomRow, { title: "Translation color", subtitle: translationColor(), icon: "●", trailing: h(RN.View, { style: { width: 22, height: 22, borderRadius: 11, backgroundColor: translationColor(), marginRight: 8 } }), last: true, onPress: () => go("Translation color", ColorPicker) })), h(CustomSection, { title: "Chat composer" }, toggle("Show translate button", "Show a small translate action beside the + button.", settings.showButton !== false, (v) => { settings.updateSettings({ showButton: v }); notifyButton(); }), toggle("Translate on send", "Translate each message right before it is sent.", !!settings.translateOnSend, (v) => { settings.updateSettings({ translateOnSend: v }); notifyButton(); }), toggle("Keep translate active", "Tap once to keep translation enabled until you tap again.", !!settings.keepArmed, (v) => { settings.updateSettings({ keepArmed: v }); notifyButton(); }), h(CustomRow, { title: "Button position", subtitle: settings.anchor === "send" ? "Next to the Send button" : "Next to the + button", trailing: h(RN.Text, { style: { color: C.sub, fontSize: 21 } }, "›"), onPress: () => { settings.updateSettings({ anchor: settings.anchor === "send" ? "actions" : "send" }); notifyButton(); } }), toggle("Hide Gift button", "Hide Rain’s Gift button in the chat composer.", !!settings.hideGiftButton, (v) => { settings.updateSettings({ hideGiftButton: v }); toast("Restart Discord to apply this setting"); })), h(RN.Text, { style: { color: C.sub, fontSize: 12, textAlign: "center", marginTop: 1 } }, "QuickTranslate " + BUILD));
 }
 /* ------------------------------------------------------------------ */
 /* plugin                                                              */
@@ -968,12 +912,14 @@ exports.default = {
     name: "QuickTranslate",
     description: "Translate messages and your own text with Google Translate. Chat bar button, translate on send, quick languages.",
     id: "quicktranslate",
-    version: "1.4.0",
+    version: "1.5.0",
     start() {
         renderErrors = 0;
         const stored = useQuickTranslate.getState();
-        const defaults = { hideExtras: true, reclaim: true, anchor: "actions" };
-        const missing = Object.fromEntries(Object.entries(defaults).filter(([key]) => stored[key] === undefined));
+        const migration = { anchor: "actions" };
+        if (stored.hideGiftButton === undefined)
+            migration.hideGiftButton = false;
+        const missing = Object.fromEntries(Object.entries(migration).filter(([key]) => stored[key] === undefined));
         if (Object.keys(missing).length)
             stored.updateSettings(missing);
         step("channel", () => {
