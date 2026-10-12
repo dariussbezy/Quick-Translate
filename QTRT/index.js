@@ -7,11 +7,11 @@ const { showToast } = rain.api.ui.toasts;
 const { findInReactTree } = rain.utils;
 const { findByName, findByProps, findByStoreName, findByTypeDisplayName } = rain.metro;
 const { clipboard, FluxDispatcher, NavigationNative, React, ReactNative: RN } = rain.metro.common;
-const { ChannelStore, MessageStore, SelectedChannelStore, UserStore } = rain.metro.common.stores;
+const { ChannelStore, MessageStore, PrivateChannelSortStore, SelectedChannelStore, UserStore } = rain.metro.common.stores;
 /* ------------------------------------------------------------------ */
 /* constants + settings store                                          */
 /* ------------------------------------------------------------------ */
-const BUILD = "v1.9.0-rain";
+const BUILD = "v1.10.0-rain";
 const FLAG_TOGGLE = 0x04000000;
 const ACCENT = "#8EA1FF";
 const MAX_TRANSLATIONS = 300;
@@ -59,8 +59,8 @@ const { useStore: useQuickTranslate, settings: qt } = createPluginStore("quicktr
     favLangs: ["en", "es", "fr", "de", "ro", "ru"],
     showSourceLanguage: false,
     autoIncoming: false,
-    includeDMs: false,
-    excludedChannelIds: [],
+    autoChannelIds: [],
+    autoIncomingImmersive: true,
     liveTranslateInput: false,
     historyEntries: [],
     cacheEntries: [],
@@ -68,6 +68,7 @@ const { useStore: useQuickTranslate, settings: qt } = createPluginStore("quicktr
 const translations = new Map();
 const cache = new Map();
 const inFlight = new Map();
+let cacheGeneration = 0;
 const autoSeen = new Set();
 const unpatches = [];
 const bridge = { text: "", change: null, inst: null, seen: 0 };
@@ -87,8 +88,8 @@ let persistentReady = false;
 let historyEntries = [];
 let requestTail = Promise.resolve();
 let lastRequestAt = 0;
-let messageSelectionChannel = null;
-let selectedMessages = new Map();
+let bulkSelectionRequest = null;
+let bulkSelectionNonce = 0;
 const toast = (t) => { try {
     showToast(t);
 }
@@ -339,6 +340,7 @@ function translate(text, tl, sl, pretty, channelId = currentChannelId()) {
     if (!out.replace(/§\d+§/g, "").trim())
         return Promise.resolve({ same: true, text, src: source });
     const selectedProvider = qt.provider || "google";
+    const generation = cacheGeneration;
     const requestProvider = (provider) => enqueueRequest(() => callApi(provider, out, tl, source));
     const request = (selectedProvider !== "deepl"
         ? requestProvider("google").then(res => Object.assign(res, { provider: "google" }))
@@ -352,23 +354,25 @@ function translate(text, tl, sl, pretty, channelId = currentChannelId()) {
         const result = source === "auto" && (!detected || detected === "auto" || detected === base)
             ? { same: true, text, src: res.src, provider: res.provider }
             : { same: false, text: restore(res.text, tokens, pretty), src: res.src, provider: res.provider };
-        cache.set(cacheKey, result);
-        trimMap(cache, MAX_CACHE);
+        if (generation === cacheGeneration) {
+            cache.set(cacheKey, result);
+            trimMap(cache, MAX_CACHE);
+        }
         addHistory(text, result.text, result, tl, channelId);
         return result;
     });
     inFlight.set(cacheKey, request);
-    request.then(() => inFlight.delete(cacheKey), () => inFlight.delete(cacheKey));
+    request.then(() => { if (inFlight.get(cacheKey) === request)
+        inFlight.delete(cacheKey); }, () => { if (inFlight.get(cacheKey) === request)
+        inFlight.delete(cacheKey); });
     return request;
 }
 /* ------------------------------------------------------------------ */
 /* chat input bridge (reads / writes the text box)                     */
 /* ------------------------------------------------------------------ */
 function isChatInput(props) {
-    const ph = props.placeholder;
-    if (typeof ph !== "string")
-        return false;
-    if (/^(message|mesaj|mensaje|nachricht|messag|написать|сообщение)/i.test(ph))
+    const ph = typeof props.placeholder === "string" ? props.placeholder : "";
+    if (ph && /^(message|mesaj|mensaje|nachricht|messag|написать|сообщение)/i.test(ph))
         return true;
     const ch = getChannel(currentChannelId());
     if (!ch)
@@ -378,7 +382,12 @@ function isChatInput(props) {
         const rid = ch.recipients && ch.recipients[0];
         name = rid ? nameOf(safe(() => UserStore.getUser(rid), null)) : null;
     }
-    return !!name && name !== "Unknown" && ph.indexOf(name) !== -1;
+    if (name && name !== "Unknown" && ph.toLowerCase().includes(String(name).toLowerCase()))
+        return true;
+    // Rain's composer is a multiline, send-enabled input, including in DMs where
+    // the placeholder may be omitted by the current Discord build.
+    return !!props.multiline && typeof props.onChangeText === "function" &&
+        (typeof props.onSubmitEditing === "function" || props.returnKeyType === "send" || props.maxLength === 2000);
 }
 function installInputCapture() {
     const TI = RN.TextInput;
@@ -423,7 +432,24 @@ function installInputCapture() {
         catch (_) { /* ignore */ }
     }));
 }
-const readInput = () => (Date.now() - bridge.seen < 600000 ? bridge.text : "");
+function composerRef() {
+    const channelId = currentChannelId();
+    if (!channelId)
+        return null;
+    const api = safe(() => findByProps("getChatInputRef"), null);
+    return safe(() => api?.getChatInputRef?.(channelId, 0), null);
+}
+function readInput() {
+    if (Date.now() - bridge.seen < 600000)
+        return String(bridge.text || "");
+    const ref = composerRef();
+    const value = safe(() => typeof ref?.getText === "function" ? ref.getText() :
+        typeof ref?.getValue === "function" ? ref.getValue() :
+            typeof ref?.text === "string" ? ref.text :
+                typeof ref?.value === "string" ? ref.value :
+                    typeof ref?.props?.value === "string" ? ref.props.value : "", "");
+    return typeof value === "string" ? value : "";
+}
 function writeInput(text) {
     let ok = false;
     if (bridge.change) {
@@ -439,6 +465,29 @@ function writeInput(text) {
             ok = true;
         }
         catch (_) { /* ignore */ }
+    }
+    if (!ok) {
+        const ref = composerRef();
+        try {
+            if (typeof ref?.setText === "function") {
+                ref.setText(text);
+                ok = true;
+            }
+            else if (typeof ref?.setValue === "function") {
+                ref.setValue(text);
+                ok = true;
+            }
+            else if (typeof ref?.setNativeProps === "function") {
+                ref.setNativeProps({ text });
+                ok = true;
+            }
+            else if (typeof ref?.clear === "function" && typeof ref?.insertText === "function") {
+                ref.clear();
+                ref.insertText(text);
+                ok = true;
+            }
+        }
+        catch (_) { /* use the captured TextInput bridge when available */ }
     }
     if (ok)
         bridge.text = text;
@@ -502,14 +551,13 @@ function scheduleLiveTranslation(visibleText, sourceText, tl, sl) {
     }, 700);
 }
 function translateCurrentText(tl, sl) {
-    const canWrite = !!(bridge.change || bridge.inst) && Date.now() - bridge.seen < 600000;
-    if (!canWrite) {
-        toast("Open a chat and type something first");
-        return Promise.resolve();
-    }
     const text = readInput();
     if (!text.trim()) {
         toast("Type a message first");
+        return Promise.resolve();
+    }
+    if (!(bridge.change || bridge.inst || composerRef())) {
+        toast("Rain could not access the message box; reopen the chat and try again");
         return Promise.resolve();
     }
     return translate(text, tl, sl, false, currentChannelId()).then(result => {
@@ -589,7 +637,7 @@ function refreshRow(channelId, id) {
         catch (_) { /* ignore */ }
     }, 0);
 }
-function translateMessage(message, tl, silent = false) {
+function translateMessage(message, tl, silent = false, immersiveOverride, autoIncoming = false) {
     const text = message && message.content;
     if (typeof text !== "string" || !text.trim()) {
         if (!silent)
@@ -605,7 +653,7 @@ function translateMessage(message, tl, silent = false) {
                 toast("Already in " + langName(tl));
             return true;
         }
-        translations.set(message.id, { text: r.text, src: r.src, tl, at: Date.now(), ch: channelId });
+        translations.set(message.id, { text: r.text, src: r.src, tl, at: Date.now(), ch: channelId, immersive: immersiveOverride, autoIncoming });
         trimMap(translations, MAX_TRANSLATIONS);
         setTimeout(() => refreshRow(channelId, message.id), silent ? 220 : 0);
         return true;
@@ -622,17 +670,14 @@ function onIncomingMessage(event) {
             return;
         const message = event?.message;
         const channelId = String(event?.channelId || message?.channel_id || "");
-        if (!message?.id || !channelId || channelId !== currentChannelId() || !message.content?.trim())
+        if (!message?.id || !channelId || !message.content?.trim())
             return;
         if (message.type != null && message.type !== 0)
             return;
         const me = safe(() => UserStore.getCurrentUser?.()?.id || UserStore.getCurrentUserId?.(), null);
         if (me && String(message.author?.id) === String(me))
             return;
-        if ((state.excludedChannelIds || []).map(String).includes(channelId))
-            return;
-        const channel = getChannel(channelId);
-        if (isDM(channel) && !state.includeDMs)
+        if (!(state.autoChannelIds || []).map(String).includes(channelId))
             return;
         const target = state.targetIn || "en";
         if (autoSeen.has(String(message.id)))
@@ -640,7 +685,7 @@ function onIncomingMessage(event) {
         autoSeen.add(String(message.id));
         if (autoSeen.size > 500)
             autoSeen.delete(autoSeen.values().next().value);
-        translateMessage(message, target, true);
+        translateMessage(message, target, true, undefined, true);
     }
     catch (_) { /* incoming translation must never affect message delivery */ }
 }
@@ -651,61 +696,64 @@ function messageArray(channelId) {
     const value = safe(() => result.toArray(), null) || result._array || result.messages || result;
     return Array.isArray(value) ? value : [];
 }
-function openMessageSelection(channelId) {
-    const sheet = safe(() => findByProps("showSimpleActionSheet"), null);
-    const hide = safe(() => findByProps("openLazy", "hideActionSheet"), null);
-    if (!sheet?.showSimpleActionSheet) {
-        toast("Could not open message selection");
+function openBulkSelection(message) {
+    const channelId = String(message?.channel_id || message?.channelId || currentChannelId() || "");
+    if (!channelId) {
+        toast("Could not find this message’s channel");
         return;
     }
-    if (messageSelectionChannel !== channelId) {
-        messageSelectionChannel = channelId;
-        selectedMessages.clear();
-    }
-    const messages = messageArray(channelId)
+    bulkSelectionRequest = { channelId, seedMessage: message, nonce: ++bulkSelectionNonce };
+    notifyButton();
+}
+function BulkMessageSelector(props) {
+    const h = React.createElement;
+    const C = palette();
+    const [selected, setSelected] = React.useState([]);
+    const [busy, setBusy] = React.useState(false);
+    const [query, setQuery] = React.useState("");
+    React.useEffect(() => {
+        setSelected(props.request.seedMessage?.id ? [String(props.request.seedMessage.id)] : []);
+        setQuery("");
+        setBusy(false);
+    }, [props.request.nonce]);
+    const seed = props.request.seedMessage;
+    const seedId = String(seed?.id || "");
+    const recent = messageArray(props.request.channelId)
         .filter((m) => m?.id && typeof m.content === "string" && m.content.trim() && (m.type == null || m.type === 0))
-        .slice(-35).reverse();
-    const reopen = () => setTimeout(() => openMessageSelection(channelId), 180);
-    const options = [
-        { label: "Translate selected (" + selectedMessages.size + ")", onPress: async () => {
-                const items = Array.from(selectedMessages.values());
-                if (!items.length) {
-                    toast("Select at least one message");
-                    return;
-                }
-                safe(() => hide?.hideActionSheet?.(), null);
-                selectedMessages.clear();
-                messageSelectionChannel = null;
-                let done = 0;
-                for (const item of items)
-                    if (await translateMessage(item, qt.targetIn || "en", true))
-                        done++;
-                toast(done + " of " + items.length + " messages translated");
-            } },
-        { label: "Clear selection", onPress: () => { selectedMessages.clear(); safe(() => hide?.hideActionSheet?.(), null); reopen(); } },
-        ...messages.map((message) => {
-            const id = String(message.id);
-            const marked = selectedMessages.has(id);
-            const summary = String(message.content).replace(/\s+/g, " ").trim();
-            return {
-                label: (marked ? "☑ " : "☐ ") + summary.slice(0, 58) + (summary.length > 58 ? "…" : ""),
-                isMarked: marked,
-                onPress: () => {
-                    if (marked)
-                        selectedMessages.delete(id);
-                    else
-                        selectedMessages.set(id, message);
-                    safe(() => hide?.hideActionSheet?.(), null);
-                    reopen();
-                },
-            };
-        }),
-    ];
-    if (!messages.length) {
-        toast("No loaded text messages in this channel");
-        return;
-    }
-    sheet.showSimpleActionSheet({ key: "QTMessageMultiSelect", header: { title: "Select messages · " + selectedMessages.size + " selected" }, options });
+        .slice(-70).reverse();
+    const messages = [seed, ...recent.filter((m) => String(m.id) !== seedId)].filter((m) => m?.id);
+    const q = query.trim().toLowerCase();
+    const visible = messages.filter((m) => !q || String(m.content).toLowerCase().includes(q));
+    const isAll = visible.length > 0 && visible.every((m) => selected.includes(String(m.id)));
+    const toggle = (message) => {
+        const id = String(message.id);
+        setSelected((current) => current.includes(id) ? current.filter(x => x !== id) : current.concat(id));
+    };
+    const run = async () => {
+        const byId = new Map(messages.map((m) => [String(m.id), m]));
+        const chosen = selected.map(id => byId.get(id)).filter(Boolean);
+        if (!chosen.length) {
+            toast("Select at least one message");
+            return;
+        }
+        setBusy(true);
+        props.onClose();
+        let done = 0;
+        for (const item of chosen)
+            if (await translateMessage(item, qt.targetIn || "en", true))
+                done++;
+        toast(done + " of " + chosen.length + " messages translated");
+        setBusy(false);
+    };
+    return h(RN.Modal, { visible: true, transparent: false, animationType: "none", onRequestClose: props.onClose, statusBarTranslucent: true }, h(RN.View, { style: { flex: 1, backgroundColor: C.bg, paddingTop: 48, paddingHorizontal: 16, paddingBottom: 18 } }, h(RN.View, { style: { flexDirection: "row", alignItems: "center", marginBottom: 14 } }, h(RN.Pressable, { onPress: props.onClose, hitSlop: 10, style: { padding: 8, marginLeft: -8, marginRight: 8 } }, h(RN.Text, { style: { color: C.text, fontSize: 27 } }, "‹")), h(RN.View, { style: { flex: 1 } }, h(RN.Text, { style: { color: C.text, fontSize: 22, fontWeight: "800" } }, "Bulk translate"), h(RN.Text, { style: { color: C.sub, fontSize: 13, marginTop: 2 } }, selected.length + " selected · newest message first"))), h(CustomInput, { value: query, placeholder: "Search messages", onChangeText: setQuery, autoCorrect: false, style: { marginBottom: 10 } }), h(RN.View, { style: { flexDirection: "row", marginBottom: 10 } }, h(RN.View, { style: { flex: 1, marginRight: 6 } }, h(CustomAction, { title: isAll ? "Deselect all" : "Select all", secondary: true, onPress: () => setSelected((current) => isAll ? current.filter(id => !visible.some((m) => String(m.id) === id)) : Array.from(new Set(current.concat(visible.map((m) => String(m.id)))))) })), h(RN.View, { style: { flex: 1, marginLeft: 6 } }, h(CustomAction, { title: "Clear selection", secondary: true, onPress: () => setSelected([]) }))), visible.length ? h(RN.ScrollView, { style: { flex: 1 }, keyboardShouldPersistTaps: "handled", contentContainerStyle: { paddingBottom: 12 } }, h(CustomSection, { title: "Messages" }, ...visible.map((message, index) => {
+        const id = String(message.id);
+        const marked = selected.includes(id);
+        const label = String(message.content).replace(/\s+/g, " ").trim();
+        const author = nameOf(message.author);
+        return h(CustomRow, { key: id, title: (id === seedId ? "Selected message · " : "") + author, subtitle: label, last: index === visible.length - 1,
+            trailing: h(RN.View, { style: { width: 23, height: 23, borderRadius: 6, borderWidth: 1.5, borderColor: marked ? C.blurple : C.off, backgroundColor: marked ? C.blurple : "transparent", alignItems: "center", justifyContent: "center" } }, marked ? h(RN.Text, { style: { color: "#FFFFFF", fontSize: 15, fontWeight: "800" } }, "✓") : null),
+            onPress: () => toggle(message) });
+    }))) : h(RN.View, { style: { flex: 1, alignItems: "center", justifyContent: "center" } }, h(RN.Text, { style: { color: C.sub } }, "No loaded messages match this search.")), h(CustomAction, { title: busy ? "Translating…" : "Translate " + selected.length + " messages", disabled: busy || !selected.length, onPress: run })));
 }
 function refreshTranslated() {
     translations.forEach((t, id) => { if (t.ch)
@@ -788,9 +836,10 @@ function decorate(row, input) {
     const rawSource = String(tr.src || "").toLowerCase();
     const sourceCode = rawSource === "zh-cn" ? "zh-CN" : rawSource === "zh-tw" ? "zh-TW" : rawSource.split("-")[0];
     const sourceHint = qt.showSourceLanguage && sourceCode && sourceCode !== "auto"
-        ? [{ type: "text", content: "\nDetected: " + languageLabel(sourceCode) + " → " + languageLabel(tr.tl) + "\n", fontSize: 11, color: palette().sub, __tr: true }]
+        ? [{ type: "text", content: "\n" + sourceCode.toUpperCase() + " → " + String(tr.tl || "").toUpperCase() + "\n", fontSize: 9, color: palette().sub, __tr: true }]
         : [];
-    if (qt.immersive)
+    const immersive = tr.autoIncoming ? qt.autoIncomingImmersive : (tr.immersive ?? qt.immersive);
+    if (immersive)
         out = base.concat([{ type: "text", content: "\n", __tr: true }], sourceHint, paint(text, color));
     else
         out = sourceHint.concat(paint(text, color));
@@ -841,7 +890,7 @@ function messagePlan(message) {
     }
     const channelId = String(message.channel_id || message.channelId || currentChannelId() || "");
     if (channelId)
-        plan.push({ key: "qt-select-messages", label: "Select messages to translate…", press: () => openMessageSelection(channelId) });
+        plan.push({ key: "qt-select-messages", label: "Bulk translate…", press: () => openBulkSelection(message) });
     plan.push({
         key: "qt-translate-to",
         label: "Translate to...",
@@ -1123,7 +1172,7 @@ function TranslateButton(props) {
     }, icon), panelOpen ? h(RN.Modal, { visible: true, transparent: true, animationType: "none", onRequestClose: closePanel }, h(RN.View, { style: { flex: 1, justifyContent: "flex-end" } }, h(RN.Pressable, { style: { position: "absolute", top: 0, bottom: 0, left: 0, right: 0, backgroundColor: "rgba(0,0,0,0.52)" }, onPress: closePanel }), h(RN.Animated.View, {
         style: { maxHeight: "88%", backgroundColor: paletteNow.bg, borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingHorizontal: 16, paddingTop: 14, paddingBottom: 28,
             transform: [{ translateY: sheetProgress.interpolate({ inputRange: [0, 1], outputRange: [620, 0] }) }] },
-    }, h(RN.View, { style: { alignSelf: "center", width: 38, height: 5, borderRadius: 3, backgroundColor: paletteNow.off, marginBottom: 16 } }), panelPage === "main" ? panelBody : h(RN.ScrollView, { keyboardShouldPersistTaps: "handled" }, ...panelBody)))) : null);
+    }, h(RN.View, { style: { alignSelf: "center", width: 38, height: 5, borderRadius: 3, backgroundColor: paletteNow.off, marginBottom: 16 } }), panelPage === "main" ? panelBody : h(RN.ScrollView, { keyboardShouldPersistTaps: "handled" }, ...panelBody)))) : null, bulkSelectionRequest ? h(BulkMessageSelector, { key: bulkSelectionRequest.nonce, request: bulkSelectionRequest, onClose: () => { bulkSelectionRequest = null; notifyButton(); } }) : null);
 }
 function patchChatButton() {
     const h = React.createElement;
@@ -1209,36 +1258,12 @@ function ColorPicker() {
             return;
         } save(hex); } }), h(CustomAction, { title: "Use default", secondary: true, onPress: () => save(ACCENT) }));
 }
-function confirmClear(title, message, action) {
-    try {
-        const sheets = findByProps("showSimpleActionSheet");
-        if (!sheets?.showSimpleActionSheet) {
-            toast("Could not open confirmation menu");
-            return;
-        }
-        sheets.showSimpleActionSheet({
-            key: "QTConfirmClear",
-            header: { title, subtitle: message },
-            options: [
-                { label: "Cancel" },
-                { label: "Clear", isDestructive: true, onPress: action },
-            ],
-        });
-    }
-    catch (_) {
-        toast("Could not open confirmation menu");
-    }
-}
 function HistoryPage() {
     const h = React.createElement;
     const settings = useQuickTranslate();
     const rows = Array.isArray(settings.historyEntries) ? settings.historyEntries : [];
     const cards = rows.map((entry, index) => h(CustomSection, { key: entry.id + index, title: languageLabel(entry.source) + " → " + languageLabel(entry.target) }, h(RN.View, { style: { padding: 14 } }, h(RN.Text, { numberOfLines: 3, style: { color: palette().sub, fontSize: 13, marginBottom: 7 } }, entry.original), h(RN.Text, { style: { color: palette().text, fontSize: 15, fontWeight: "600", lineHeight: 21 } }, entry.translated), h(RN.Text, { style: { color: palette().sub, fontSize: 11, marginTop: 6 } }, (entry.provider === "deepl" ? "DeepL" : "Google") + " · " + new Date(entry.at).toLocaleString()), h(RN.View, { style: { marginTop: 7 } }, h(CustomAction, { title: "Copy translation", secondary: true, onPress: () => copyText(entry.translated) })))));
-    return h(RN.ScrollView, { style: { flex: 1 }, contentContainerStyle: { padding: 16, paddingBottom: 42 } }, h(RN.View, { style: { flexDirection: "row", marginBottom: 12 } }, h(RN.View, { style: { flex: 1 } }, h(RN.Text, { style: { color: palette().text, fontSize: 22, fontWeight: "800" } }, "Translation history"), h(RN.Text, { style: { color: palette().sub, fontSize: 13, marginTop: 3 } }, rows.length + " of " + MAX_HISTORY + " saved locally")), h(RN.Text, { style: { color: palette().sub, fontSize: 19, marginTop: 2 } }, "◷")), rows.length ? h(CustomAction, { title: "Clear history", secondary: true, onPress: () => confirmClear("Clear translation history?", "Saved translations will be removed from this device.", () => {
-            historyEntries = [];
-            persistLocalData();
-            toast("Translation history cleared");
-        }) }) : h(RN.Text, { style: { color: palette().sub, fontSize: 14, paddingVertical: 20, textAlign: "center" } }, "No translations saved yet."), ...cards);
+    return h(RN.ScrollView, { style: { flex: 1 }, contentContainerStyle: { padding: 16, paddingBottom: 42 } }, h(RN.View, { style: { flexDirection: "row", marginBottom: 12 } }, h(RN.View, { style: { flex: 1 } }, h(RN.Text, { style: { color: palette().text, fontSize: 22, fontWeight: "800" } }, "Translation history"), h(RN.Text, { style: { color: palette().sub, fontSize: 13, marginTop: 3 } }, rows.length + " of " + MAX_HISTORY + " saved locally")), h(RN.Text, { style: { color: palette().sub, fontSize: 19, marginTop: 2 } }, "◷")), rows.length ? null : h(RN.Text, { style: { color: palette().sub, fontSize: 14, paddingVertical: 20, textAlign: "center" } }, "No translations saved yet."), ...cards);
 }
 function listChannelsForGuild(guild) {
     const channels = [];
@@ -1282,33 +1307,36 @@ function listChannelsForGuild(guild) {
     visit(guild.channels, 0);
     return channels;
 }
-function ExcludedChannelsPage() {
+function AutoChannelsPage() {
     const h = React.createElement;
     const settings = useQuickTranslate();
     const [query, setQuery] = React.useState("");
     const guildStore = safe(() => findByStoreName("GuildStore"), null);
     const guilds = Object.values(safe(() => guildStore?.getGuilds?.(), {}) || {});
-    const excluded = (settings.excludedChannelIds || []).map(String);
+    const selected = (settings.autoChannelIds || []).map(String);
     const q = query.trim().toLowerCase();
     const sections = guilds.map(guild => ({
         guild,
         channels: listChannelsForGuild(guild).filter(channel => !q || String(channel.name).toLowerCase().includes(q) || String(guild.name).toLowerCase().includes(q)),
     })).filter(section => section.channels.length);
     const toggleChannel = (id) => {
-        const next = excluded.includes(id) ? excluded.filter(x => x !== id) : excluded.concat(id);
-        settings.updateSettings({ excludedChannelIds: next });
+        const next = selected.includes(id) ? selected.filter(x => x !== id) : selected.concat(id);
+        settings.updateSettings({ autoChannelIds: next });
     };
-    return h(RN.ScrollView, { style: { flex: 1 }, keyboardShouldPersistTaps: "handled", contentContainerStyle: { padding: 16, paddingBottom: 40 } }, h(RN.Text, { style: { color: palette().sub, fontSize: 13, marginBottom: 12 } }, "Choose channels where incoming auto-translation should stay off. " + excluded.length + " selected."), h(CustomInput, { value: query, placeholder: "Search channels or servers", onChangeText: setQuery, autoCorrect: false, style: { marginBottom: 16 } }), sections.length ? sections.map((section, sectionIndex) => h(CustomSection, { key: section.guild.id, title: section.guild.name || "Server" }, ...section.channels.map((channel, index) => {
-        const marked = excluded.includes(String(channel.id));
-        return h(CustomRow, {
-            key: channel.id,
-            title: "# " + channel.name,
-            subtitle: channel.topic || undefined,
-            last: index === section.channels.length - 1,
+    const dmIds = safe(() => PrivateChannelSortStore.getPrivateChannelIds?.(), []) || [];
+    const dms = dmIds.map(id => safe(() => ChannelStore.getChannel(String(id)), null)).filter((channel) => channel && isDM(channel)).map((channel) => {
+        const recipients = Array.isArray(channel.recipients) ? channel.recipients : [];
+        const label = channel.name || recipients.map((id) => nameOf(safe(() => UserStore.getUser(String(id)), null))).join(", ") || "Direct message";
+        return Object.assign({}, channel, { displayName: label });
+    }).filter((channel) => !q || String(channel.displayName).toLowerCase().includes(q));
+    const row = (channel, label, index, total) => {
+        const id = String(channel.id);
+        const marked = selected.includes(id);
+        return h(CustomRow, { key: id, title: label, subtitle: channel.topic || undefined, last: index === total - 1,
             trailing: h(RN.View, { style: { width: 23, height: 23, borderRadius: 6, borderWidth: 1.5, borderColor: marked ? palette().blurple : palette().off, backgroundColor: marked ? palette().blurple : "transparent", alignItems: "center", justifyContent: "center" } }, marked ? h(RN.Text, { style: { color: "#FFFFFF", fontSize: 15, fontWeight: "800" } }, "✓") : null),
-            onPress: () => toggleChannel(String(channel.id)),
-        });
-    }))) : h(RN.Text, { style: { color: palette().sub, fontSize: 14, paddingVertical: 22, textAlign: "center" } }, "No channels found. Open a server once so Rain can load its channel list."));
+            onPress: () => toggleChannel(id) });
+    };
+    return h(RN.ScrollView, { style: { flex: 1 }, keyboardShouldPersistTaps: "handled", contentContainerStyle: { padding: 16, paddingBottom: 40 } }, h(RN.Text, { style: { color: palette().sub, fontSize: 13, marginBottom: 12 } }, "Select only the channels and DMs where new incoming messages should be translated. " + selected.length + " selected."), h(CustomInput, { value: query, placeholder: "Search channels, servers, or DMs", onChangeText: setQuery, autoCorrect: false, style: { marginBottom: 16 } }), dms.length ? h(CustomSection, { title: "Direct messages" }, ...dms.map((channel, index) => row(channel, channel.displayName, index, dms.length))) : null, ...sections.map(section => h(CustomSection, { key: section.guild.id, title: section.guild.name || "Server" }, ...section.channels.map((channel, index) => row(channel, "# " + channel.name, index, section.channels.length)))), !dms.length && !sections.length ? h(RN.Text, { style: { color: palette().sub, fontSize: 14, paddingVertical: 22, textAlign: "center" } }, "No channels or DMs found. Open them once so Rain can load the channel list.") : null);
 }
 const TargetOutPage = () => React.createElement(LangPicker, { field: "targetOut" });
 const SourceOutPage = () => React.createElement(LangPicker, { field: "sourceOut" });
@@ -1328,12 +1356,15 @@ function Settings() {
         trailing: settings.provider !== "deepl" ? h(RN.Text, { style: { color: C.blurple, fontWeight: "800", fontSize: 18 } }, "✓") : null,
         onPress: () => settings.updateSettings({ provider: "google" }) }), h(CustomRow, { title: "DeepL", subtitle: "Uses your personal API key · Google fallback", icon: "✦", last: settings.provider === "deepl",
         trailing: settings.provider === "deepl" ? h(RN.Text, { style: { color: C.blurple, fontWeight: "800", fontSize: 18 } }, "✓") : null,
-        onPress: () => settings.updateSettings({ provider: "deepl" }) }), settings.provider === "deepl" ? h(RN.View, { style: { padding: 14, borderTopWidth: 1, borderTopColor: C.card2 } }, h(RN.Text, { style: { color: C.text, fontSize: 14, fontWeight: "600", marginBottom: 8 } }, "DeepL API key"), h(CustomInput, { value: settings.deeplApiKey || "", placeholder: "Paste your API key", autoCapitalize: "none", autoCorrect: false, secureTextEntry: true, onChangeText: (deeplApiKey) => settings.updateSettings({ deeplApiKey }) }), h(RN.Text, { style: { color: C.sub, fontSize: 12, marginTop: 7, lineHeight: 17 } }, "Your key is stored in this plugin’s local settings. Free API keys ending in :fx are supported.")) : null), h(CustomSection, { title: "Languages" }, h(CustomRow, { title: "Translate my messages to", subtitle: languageLabel(settings.targetOut), icon: "↗", trailing: h(RN.Text, { style: { color: C.sub, fontSize: 21 } }, "›"), onPress: () => go("Translate my messages to", TargetOutPage) }), h(CustomRow, { title: "My messages are written in", subtitle: languageLabel(settings.sourceOut), icon: "↙", trailing: h(RN.Text, { style: { color: C.sub, fontSize: 21 } }, "›"), onPress: () => go("My messages are written in", SourceOutPage) }), h(CustomRow, { title: "Translate messages to", subtitle: languageLabel(settings.targetIn), icon: "文", trailing: h(RN.Text, { style: { color: C.sub, fontSize: 21 } }, "›"), onPress: () => go("Translate messages to", TargetInPage) }), h(CustomRow, { title: "Quick languages", subtitle: (settings.favLangs || []).length + " of " + MAX_FAVS + " selected", icon: "★", last: true, trailing: h(RN.Text, { style: { color: C.sub, fontSize: 21 } }, "›"), onPress: () => go("Quick languages", FavPicker) })), h(CustomSection, { title: "Appearance" }, toggle("Immersive translation", "Show the translation below the original message. Turn off to replace its text.", !!settings.immersive, (v) => { settings.updateSettings({ immersive: v }); refreshTranslated(); }), toggle("Show detected source language", "After long-pressing a message and choosing Translate, show ‘Detected: language → target’ beside the result.", !!settings.showSourceLanguage, (v) => { settings.updateSettings({ showSourceLanguage: v }); refreshTranslated(); if (v)
-        toast("Translate a message to see its detected source language"); }), h(CustomRow, { title: "Translation color", subtitle: translationColor(), icon: "◈", trailing: h(RN.Text, { style: { color: C.sub, fontSize: 21 } }, "›"), last: true, onPress: () => go("Translation color", ColorPicker) })), h(CustomSection, { title: "Incoming messages" }, toggle("Translate incoming messages", "Translate new messages in the channel you are viewing.", !!settings.autoIncoming, (v) => settings.updateSettings({ autoIncoming: v })), toggle("Include DMs and group DMs", "Direct messages are excluded by default.", !!settings.includeDMs, (v) => settings.updateSettings({ includeDMs: v })), h(CustomRow, { title: "Excluded channels", subtitle: (settings.excludedChannelIds || []).length + " selected", icon: "⊘", trailing: h(RN.Text, { style: { color: C.sub, fontSize: 21 } }, "›"), last: true, onPress: () => go("Excluded channels", ExcludedChannelsPage) })), h(CustomSection, { title: "History & cache" }, h(CustomRow, { title: "Translation history", subtitle: (settings.historyEntries || []).length + " saved locally", icon: "◷", trailing: h(RN.Text, { style: { color: C.sub, fontSize: 21 } }, "›"), onPress: () => go("Translation history", HistoryPage) }), h(RN.View, { style: { paddingHorizontal: 13, paddingBottom: 11 } }, h(CustomAction, { title: "Clear translation cache", secondary: true, onPress: () => confirmClear("Clear translation cache?", "Cached results will be removed. Translation history will stay.", () => {
+        onPress: () => settings.updateSettings({ provider: "deepl" }) }), settings.provider === "deepl" ? h(RN.View, { style: { padding: 14, borderTopWidth: 1, borderTopColor: C.card2 } }, h(RN.Text, { style: { color: C.text, fontSize: 14, fontWeight: "600", marginBottom: 8 } }, "DeepL API key"), h(CustomInput, { value: settings.deeplApiKey || "", placeholder: "Paste your API key", autoCapitalize: "none", autoCorrect: false, secureTextEntry: true, onChangeText: (deeplApiKey) => settings.updateSettings({ deeplApiKey }) }), h(RN.Text, { style: { color: C.sub, fontSize: 12, marginTop: 7, lineHeight: 17 } }, "Your key is stored in this plugin’s local settings. Free API keys ending in :fx are supported.")) : null), h(CustomSection, { title: "Languages" }, h(CustomRow, { title: "Translate my messages to", subtitle: languageLabel(settings.targetOut), icon: "↗", trailing: h(RN.Text, { style: { color: C.sub, fontSize: 21 } }, "›"), onPress: () => go("Translate my messages to", TargetOutPage) }), h(CustomRow, { title: "My messages are written in", subtitle: languageLabel(settings.sourceOut), icon: "↙", trailing: h(RN.Text, { style: { color: C.sub, fontSize: 21 } }, "›"), onPress: () => go("My messages are written in", SourceOutPage) }), h(CustomRow, { title: "Translate messages to", subtitle: languageLabel(settings.targetIn), icon: "文", trailing: h(RN.Text, { style: { color: C.sub, fontSize: 21 } }, "›"), onPress: () => go("Translate messages to", TargetInPage) }), h(CustomRow, { title: "Quick languages", subtitle: (settings.favLangs || []).length + " of " + MAX_FAVS + " selected", icon: "★", last: true, trailing: h(RN.Text, { style: { color: C.sub, fontSize: 21 } }, "›"), onPress: () => go("Quick languages", FavPicker) })), h(CustomSection, { title: "Appearance" }, toggle("Immersive translation", "Show the translation below the original message. Turn off to replace its text.", !!settings.immersive, (v) => { settings.updateSettings({ immersive: v }); refreshTranslated(); }), toggle("Show detected source language", "Show a compact source → target code below the translation.", !!settings.showSourceLanguage, (v) => { settings.updateSettings({ showSourceLanguage: v }); refreshTranslated(); if (v)
+        toast("Translate a message to see its source and target codes"); }), h(CustomRow, { title: "Translation color", subtitle: translationColor(), trailing: h(RN.View, { style: { flexDirection: "row", alignItems: "center" } }, h(RN.View, { style: { width: 15, height: 15, borderRadius: 5, backgroundColor: translationColor(), marginRight: 9 } }), h(RN.Text, { style: { color: C.sub, fontSize: 21 } }, "›")), last: true, onPress: () => go("Translation color", ColorPicker) })), h(CustomSection, { title: "Incoming messages" }, toggle("Translate incoming messages", "Translate new messages only in the channels and DMs selected below.", !!settings.autoIncoming, (v) => settings.updateSettings({ autoIncoming: v })), toggle("Immersive incoming translations", "Show automatic translations below the original. This is separate from the main Immersive translation setting.", !!settings.autoIncomingImmersive, (v) => { settings.updateSettings({ autoIncomingImmersive: v }); refreshTranslated(); }), h(CustomRow, { title: "Automatic channels and DMs", subtitle: (settings.autoChannelIds || []).length + " selected", icon: "☷", trailing: h(RN.Text, { style: { color: C.sub, fontSize: 21 } }, "›"), last: true, onPress: () => go("Automatic channels and DMs", AutoChannelsPage) })), h(CustomSection, { title: "History & cache" }, h(CustomRow, { title: "Translation history", subtitle: (settings.historyEntries || []).length + " saved locally", icon: "◷", trailing: h(RN.Text, { style: { color: C.sub, fontSize: 21 } }, "›"), onPress: () => go("Translation history", HistoryPage) }), h(RN.View, { style: { paddingHorizontal: 13, paddingBottom: 11 } }, h(CustomAction, { title: "Clear translation cache", secondary: true, onPress: () => {
+            cacheGeneration++;
             cache.clear();
+            inFlight.clear();
             useQuickTranslate.getState().updateSettings({ cacheEntries: [] });
+            persistLocalData();
             toast("Translation cache cleared");
-        }) }))), h(CustomSection, { title: "Chat composer" }, toggle("Show translate button", "Show a small translate action beside the + button.", settings.showButton !== false, (v) => { settings.updateSettings({ showButton: v }); notifyButton(); }), toggle("Translate on send", "Translate each message right before it is sent.", !!settings.translateOnSend, (v) => { settings.updateSettings({ translateOnSend: v }); notifyButton(); }), toggle("Translate as I type", "While Translate is active, replace the composer text with its translation after a short pause.", !!settings.liveTranslateInput, (v) => {
+        } }))), h(CustomSection, { title: "Chat composer" }, toggle("Show translate button", "Show a small translate action beside the + button.", settings.showButton !== false, (v) => { settings.updateSettings({ showButton: v }); notifyButton(); }), toggle("Translate on send", "Translate each message right before it is sent.", !!settings.translateOnSend, (v) => { settings.updateSettings({ translateOnSend: v }); notifyButton(); }), toggle("Translate as I type", "While Translate is active, replace the composer text with its translation after a short pause.", !!settings.liveTranslateInput, (v) => {
         settings.updateSettings({ liveTranslateInput: v });
         cancelLiveTranslation();
         if (v && armed) {
@@ -1394,6 +1425,16 @@ function migrateSettings() {
         });
         stored = useQuickTranslate.getState();
     }
+    if (stored.settingsVersion < 5) {
+        stored.updateSettings({
+            autoChannelIds: Array.isArray(stored.autoChannelIds) ? stored.autoChannelIds : [],
+            autoIncomingImmersive: stored.autoIncomingImmersive !== false,
+            includeDMs: undefined,
+            excludedChannelIds: undefined,
+            settingsVersion: 5,
+        });
+        stored = useQuickTranslate.getState();
+    }
     if (stored.anchor !== "actions" && stored.anchor !== "send")
         stored.updateSettings({ anchor: "actions" });
 }
@@ -1420,22 +1461,26 @@ function onChannelSelect(e) {
     if (id === lastChannelId)
         return;
     lastChannelId = id;
+    bridge.text = "";
+    bridge.change = null;
+    bridge.inst = null;
+    bridge.seen = 0;
+    if (bulkSelectionRequest && id !== bulkSelectionRequest.channelId) {
+        bulkSelectionRequest = null;
+        notifyButton();
+    }
     if (armed) {
         armed = null;
         cancelLiveTranslation();
         resetLiveSource();
         notifyButton();
     }
-    if (messageSelectionChannel && id !== messageSelectionChannel) {
-        messageSelectionChannel = null;
-        selectedMessages.clear();
-    }
 }
 exports.default = {
     name: "QuickTranslate",
     description: "Translate messages and your own text with Google Translate or DeepL.",
     id: "quicktranslate",
-    version: "1.9.0",
+    version: "1.10.0",
     start() {
         renderErrors = 0;
         step("settingsHydration", waitForSettingsHydration);
@@ -1473,8 +1518,7 @@ exports.default = {
         cache.clear();
         inFlight.clear();
         autoSeen.clear();
-        messageSelectionChannel = null;
-        selectedMessages.clear();
+        bulkSelectionRequest = null;
         persistentReady = false;
         historyEntries = [];
         bridge.text = "";
