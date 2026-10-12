@@ -1,11 +1,9 @@
 {
   "id": "quicktranslate",
   "name": "Quick Translate",
-  "description": "Translate messages with Google Translate or DeepL, with local history, batch translation, and composer tools.",
-  "version": "1.7.0",
-  "authors": [
-    "dariussbezy"
-  ],
+  "description": "Translate messages with Google Translate or DeepL, with local history, interactive message selection, and composer tools.",
+  "version": "1.8.0",
+  "authors": ["dariussbezy"],
   "main": "index.js",
   "settings": true
 }
