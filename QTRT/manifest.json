@@ -1,0 +1,9 @@
+{
+  "id": "quicktranslate",
+  "name": "Quick Translate",
+  "description": "Translate messages and your own text with Google Translate.",
+  "version": "1.2.0",
+  "authors": ["dariussbezy"],
+  "main": "index.js",
+  "settings": true
+}
