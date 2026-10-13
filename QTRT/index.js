@@ -11,7 +11,7 @@ const { ChannelStore, MessageStore, PrivateChannelSortStore, SelectedChannelStor
 /* ------------------------------------------------------------------ */
 /* constants + settings store                                          */
 /* ------------------------------------------------------------------ */
-const BUILD = "v1.10.0-rain";
+const BUILD = "v1.11.0-rain";
 const FLAG_TOGGLE = 0x04000000;
 const ACCENT = "#8EA1FF";
 const MAX_TRANSLATIONS = 300;
@@ -50,7 +50,6 @@ const { useStore: useQuickTranslate, settings: qt } = createPluginStore("quicktr
     immersive: true,
     translationColor: ACCENT,
     showButton: true,
-    translateOnSend: false,
     keepArmed: true,
     hideGiftButton: true,
     provider: "google",
@@ -61,7 +60,6 @@ const { useStore: useQuickTranslate, settings: qt } = createPluginStore("quicktr
     autoIncoming: false,
     autoChannelIds: [],
     autoIncomingImmersive: true,
-    liveTranslateInput: false,
     historyEntries: [],
     cacheEntries: [],
 });
@@ -77,10 +75,6 @@ const buttonListeners = new Set();
 let armed = null;
 let lastChannelId = null;
 let lastOriginal = null;
-let liveInputTimer = null;
-let liveInputRevision = 0;
-let liveSourceText = null;
-let liveRenderedText = null;
 let renderErrors = 0;
 let renderUnpatch = null;
 let ThemeStore;
@@ -125,12 +119,23 @@ function persistLocalData() {
     }
     catch (_) { /* settings may still be hydrating */ }
 }
+function clearTranslationCache() {
+    const state = useQuickTranslate.getState();
+    const oldCount = Math.max(cache.size, Array.isArray(state.cacheEntries) ? state.cacheEntries.length : 0);
+    cacheGeneration++;
+    cache.clear();
+    inFlight.clear();
+    state.updateSettings({ cacheEntries: [] });
+    persistLocalData();
+    toast(oldCount ? `Translation cache cleared (${oldCount} entries)` : "Translation cache is already empty");
+}
 function hydrateLocalData() {
+    const generationAtStart = cacheGeneration;
     const load = () => {
         const state = useQuickTranslate.getState();
         historyEntries = Array.isArray(state.historyEntries) ? state.historyEntries.filter((x) => x && typeof x.original === "string" && typeof x.translated === "string").slice(0, MAX_HISTORY) : [];
         cache.clear();
-        if (Array.isArray(state.cacheEntries)) {
+        if (generationAtStart === cacheGeneration && Array.isArray(state.cacheEntries)) {
             for (const entry of state.cacheEntries.slice(-MAX_CACHE)) {
                 if (Array.isArray(entry) && typeof entry[0] === "string" && entry[1] && typeof entry[1].text === "string")
                     cache.set(entry[0], entry[1]);
@@ -408,10 +413,6 @@ function installInputCapture() {
                     bridge.text = t;
                     if (original)
                         original(t);
-                    if (armed && qt.liveTranslateInput) {
-                        const sourceText = updateLiveSource(t);
-                        scheduleLiveTranslation(t, sourceText, armed.tl, armed.sl);
-                    }
                 },
             });
             const ref = args[1];
@@ -440,8 +441,8 @@ function composerRef() {
     return safe(() => api?.getChatInputRef?.(channelId, 0), null);
 }
 function readInput() {
-    if (Date.now() - bridge.seen < 600000)
-        return String(bridge.text || "");
+    if (Date.now() - bridge.seen < 600000 && String(bridge.text || "").trim())
+        return String(bridge.text);
     const ref = composerRef();
     const value = safe(() => typeof ref?.getText === "function" ? ref.getText() :
         typeof ref?.getValue === "function" ? ref.getValue() :
@@ -493,67 +494,10 @@ function writeInput(text) {
         bridge.text = text;
     return ok;
 }
-function cancelLiveTranslation() {
-    liveInputRevision++;
-    if (liveInputTimer)
-        clearTimeout(liveInputTimer);
-    liveInputTimer = null;
-}
-function resetLiveSource(text = null) {
-    liveSourceText = text;
-    liveRenderedText = text;
-}
-function updateLiveSource(visibleText) {
-    if (liveRenderedText == null || liveSourceText == null) {
-        resetLiveSource(visibleText);
-        return visibleText;
-    }
-    if (visibleText === liveRenderedText)
-        return liveSourceText;
-    if (visibleText.startsWith(liveRenderedText)) {
-        liveSourceText += visibleText.slice(liveRenderedText.length);
-    }
-    else if (liveRenderedText.startsWith(visibleText)) {
-        const removed = liveRenderedText.length - visibleText.length;
-        liveSourceText = liveSourceText.slice(0, Math.max(0, liveSourceText.length - removed));
-    }
-    else {
-        liveSourceText = visibleText;
-    }
-    liveRenderedText = visibleText;
-    return liveSourceText;
-}
-function scheduleLiveTranslation(visibleText, sourceText, tl, sl) {
-    cancelLiveTranslation();
-    if (!visibleText.trim() || !sourceText.trim())
-        return;
-    const visibleAtSchedule = visibleText;
-    const revision = liveInputRevision;
-    liveInputTimer = setTimeout(() => {
-        liveInputTimer = null;
-        if (revision !== liveInputRevision || !armed || !qt.liveTranslateInput || visibleAtSchedule !== readInput())
-            return;
-        translate(sourceText, tl, sl, false, currentChannelId()).then(result => {
-            if (revision !== liveInputRevision || !armed || !qt.liveTranslateInput || visibleAtSchedule !== readInput())
-                return;
-            if (result.same) {
-                liveRenderedText = visibleAtSchedule;
-                return;
-            }
-            if (writeInput(result.text)) {
-                liveRenderedText = result.text;
-                lastOriginal = sourceText;
-            }
-        }).catch((e) => {
-            if (revision === liveInputRevision)
-                toast("Live translation failed: " + (e && e.message ? e.message : e));
-        });
-    }, 700);
-}
 function translateCurrentText(tl, sl) {
     const text = readInput();
     if (!text.trim()) {
-        toast("Type a message first");
+        toast("Type a message in the chat box first");
         return Promise.resolve();
     }
     if (!(bridge.change || bridge.inst || composerRef())) {
@@ -567,10 +511,6 @@ function translateCurrentText(tl, sl) {
         }
         if (writeInput(result.text)) {
             lastOriginal = text;
-            if (armed && qt.liveTranslateInput) {
-                liveSourceText = text;
-                liveRenderedText = result.text;
-            }
         }
         else
             toast("Could not update the chat box; the original text is unchanged");
@@ -581,10 +521,8 @@ function restoreOriginal() {
         toast("Nothing to restore");
         return;
     }
-    if (writeInput(lastOriginal)) {
-        resetLiveSource(lastOriginal);
+    if (writeInput(lastOriginal))
         lastOriginal = null;
-    }
     else
         toast("Could not write to the chat box");
 }
@@ -597,14 +535,12 @@ function patchSend() {
         try {
             const msg = args[1];
             const job = armed;
-            if ((job || qt.translateOnSend) && msg && typeof msg.content === "string" && msg.content.trim()) {
-                cancelLiveTranslation();
-                if (job && !qt.keepArmed) {
+            if (job && msg && typeof msg.content === "string" && msg.content.trim()) {
+                if (!qt.keepArmed) {
                     armed = null;
-                    resetLiveSource();
                     notifyButton();
                 }
-                pending = translate(msg.content, job ? job.tl : qt.targetOut, job ? job.sl : qt.sourceOut, false, currentChannelId()).then(r => {
+                pending = translate(msg.content, job.tl, job.sl, false, currentChannelId()).then(r => {
                     if (!r.same)
                         args[1] = Object.assign({}, msg, { content: r.text });
                 });
@@ -1057,8 +993,8 @@ function TranslateButton(props) {
     const iconId = findAssetId("LanguageIcon");
     const C = palette();
     const icon = iconId
-        ? h(RN.Image, { source: iconId, style: { width: 24, height: 24, tintColor: armed || settings.translateOnSend ? ACCENT : C.sub } })
-        : h(RN.Text, { style: { fontSize: 20, textAlign: "center", color: armed || settings.translateOnSend ? ACCENT : C.sub } }, "\uD83C\uDF10");
+        ? h(RN.Image, { source: iconId, style: { width: 24, height: 24, tintColor: armed ? ACCENT : C.sub } })
+        : h(RN.Text, { style: { fontSize: 20, textAlign: "center", color: armed ? ACCENT : C.sub } }, "\uD83C\uDF10");
     const onPress = () => {
         if (didLongPress.current) {
             didLongPress.current = false;
@@ -1066,18 +1002,11 @@ function TranslateButton(props) {
         }
         if (armed) {
             armed = null;
-            cancelLiveTranslation();
-            resetLiveSource();
             notifyButton();
             toast("Translation turned off");
             return;
         }
         armed = { tl: settings.targetOut || "en", sl: settings.sourceOut || "auto" };
-        if (settings.liveTranslateInput) {
-            const text = readInput();
-            resetLiveSource(text);
-            scheduleLiveTranslation(text, text, armed.tl, armed.sl);
-        }
         notifyButton();
         toast(settings.keepArmed
             ? "Translation is active until you turn it off"
@@ -1130,15 +1059,15 @@ function TranslateButton(props) {
         .filter(([code, name]) => !query.trim() || name.toLowerCase().includes(query.trim().toLowerCase()) || code.toLowerCase().includes(query.trim().toLowerCase()));
     const panelBody = panelPage === "main"
         ? [
-            h(RN.Text, { key: "title", style: { color: paletteNow.text, fontSize: 22, fontWeight: "700", marginBottom: 4 } }, "Translate once"),
-            h(RN.Text, { key: "hint", style: { color: paletteNow.sub, fontSize: 14, marginBottom: 16 } }, "Choose languages for a one-time translation of the current chat text."),
+            h(RN.Text, { key: "title", style: { color: paletteNow.text, fontSize: 22, fontWeight: "700", marginBottom: 4 } }, "Translate draft"),
+            h(RN.Text, { key: "hint", style: { color: paletteNow.sub, fontSize: 14, marginBottom: 16 } }, "Translate the text already in the chat box. It stays editable and is not sent."),
             h(CustomSection, { key: "languages", title: "Languages" }, h(CustomRow, { title: "Translate from", subtitle: languageLabel(source), icon: "↗", onPress: () => { setQuery(""); setPanelPage("source"); }, trailing: h(RN.Text, { style: { color: paletteNow.sub, fontSize: 20 } }, "›") }), h(CustomRow, { title: "Translate to", subtitle: languageLabel(target), icon: "↙", last: true, onPress: () => { setQuery(""); setPanelPage("target"); }, trailing: h(RN.Text, { style: { color: paletteNow.sub, fontSize: 20 } }, "›") })),
             favorites.length ? h(RN.ScrollView, { key: "favorites", horizontal: true, showsHorizontalScrollIndicator: false, style: { marginTop: 12, marginBottom: 8 } }, ...favorites.map((code) => h(RN.Pressable, {
                 key: code,
                 onPress: () => setTarget(code),
                 style: { paddingHorizontal: 14, paddingVertical: 9, borderRadius: 18, marginRight: 8, backgroundColor: code === target ? paletteNow.blurple : paletteNow.chip },
             }, h(RN.Text, { style: { color: paletteNow.text, fontSize: 14, fontWeight: "600" } }, languageLabel(code))))) : null,
-            h(CustomAction, { key: "translate", title: busy ? "Translating…" : "Translate once", disabled: busy, onPress: () => { closePanel(); run(target, source); } }),
+            h(CustomAction, { key: "translate", title: busy ? "Translating…" : "Translate draft", disabled: busy, onPress: () => { closePanel(); run(target, source); } }),
             lastOriginal != null ? h(CustomAction, { key: "restore", title: "Restore original text", secondary: true, onPress: () => { closePanel(); restoreOriginal(); } }) : null,
             h(CustomAction, { key: "close", title: "Close", secondary: true, onPress: closePanel }),
         ]
@@ -1165,7 +1094,7 @@ function TranslateButton(props) {
         collapsable: false,
         accessibilityRole: "button",
         accessibilityLabel: "Translate message",
-        accessibilityHint: "Tap to arm or disarm translation; hold for translation options",
+        accessibilityHint: "Tap to arm or disarm translation; hold to translate the current draft",
         accessibilityActions: [{ name: "activate", label: "Translate" }],
         onAccessibilityTap: onPress,
         style: { width: 40, height: 40, backgroundColor: "transparent", alignItems: "center", justifyContent: "center", opacity: busy ? 0.5 : 1, transform: [{ scale: buttonScale }] },
@@ -1357,25 +1286,9 @@ function Settings() {
         onPress: () => settings.updateSettings({ provider: "google" }) }), h(CustomRow, { title: "DeepL", subtitle: "Uses your personal API key · Google fallback", icon: "✦", last: settings.provider === "deepl",
         trailing: settings.provider === "deepl" ? h(RN.Text, { style: { color: C.blurple, fontWeight: "800", fontSize: 18 } }, "✓") : null,
         onPress: () => settings.updateSettings({ provider: "deepl" }) }), settings.provider === "deepl" ? h(RN.View, { style: { padding: 14, borderTopWidth: 1, borderTopColor: C.card2 } }, h(RN.Text, { style: { color: C.text, fontSize: 14, fontWeight: "600", marginBottom: 8 } }, "DeepL API key"), h(CustomInput, { value: settings.deeplApiKey || "", placeholder: "Paste your API key", autoCapitalize: "none", autoCorrect: false, secureTextEntry: true, onChangeText: (deeplApiKey) => settings.updateSettings({ deeplApiKey }) }), h(RN.Text, { style: { color: C.sub, fontSize: 12, marginTop: 7, lineHeight: 17 } }, "Your key is stored in this plugin’s local settings. Free API keys ending in :fx are supported.")) : null), h(CustomSection, { title: "Languages" }, h(CustomRow, { title: "Translate my messages to", subtitle: languageLabel(settings.targetOut), icon: "↗", trailing: h(RN.Text, { style: { color: C.sub, fontSize: 21 } }, "›"), onPress: () => go("Translate my messages to", TargetOutPage) }), h(CustomRow, { title: "My messages are written in", subtitle: languageLabel(settings.sourceOut), icon: "↙", trailing: h(RN.Text, { style: { color: C.sub, fontSize: 21 } }, "›"), onPress: () => go("My messages are written in", SourceOutPage) }), h(CustomRow, { title: "Translate messages to", subtitle: languageLabel(settings.targetIn), icon: "文", trailing: h(RN.Text, { style: { color: C.sub, fontSize: 21 } }, "›"), onPress: () => go("Translate messages to", TargetInPage) }), h(CustomRow, { title: "Quick languages", subtitle: (settings.favLangs || []).length + " of " + MAX_FAVS + " selected", icon: "★", last: true, trailing: h(RN.Text, { style: { color: C.sub, fontSize: 21 } }, "›"), onPress: () => go("Quick languages", FavPicker) })), h(CustomSection, { title: "Appearance" }, toggle("Immersive translation", "Show the translation below the original message. Turn off to replace its text.", !!settings.immersive, (v) => { settings.updateSettings({ immersive: v }); refreshTranslated(); }), toggle("Show detected source language", "Show a compact source → target code below the translation.", !!settings.showSourceLanguage, (v) => { settings.updateSettings({ showSourceLanguage: v }); refreshTranslated(); if (v)
-        toast("Translate a message to see its source and target codes"); }), h(CustomRow, { title: "Translation color", subtitle: translationColor(), trailing: h(RN.View, { style: { flexDirection: "row", alignItems: "center" } }, h(RN.View, { style: { width: 15, height: 15, borderRadius: 5, backgroundColor: translationColor(), marginRight: 9 } }), h(RN.Text, { style: { color: C.sub, fontSize: 21 } }, "›")), last: true, onPress: () => go("Translation color", ColorPicker) })), h(CustomSection, { title: "Incoming messages" }, toggle("Translate incoming messages", "Translate new messages only in the channels and DMs selected below.", !!settings.autoIncoming, (v) => settings.updateSettings({ autoIncoming: v })), toggle("Immersive incoming translations", "Show automatic translations below the original. This is separate from the main Immersive translation setting.", !!settings.autoIncomingImmersive, (v) => { settings.updateSettings({ autoIncomingImmersive: v }); refreshTranslated(); }), h(CustomRow, { title: "Automatic channels and DMs", subtitle: (settings.autoChannelIds || []).length + " selected", icon: "☷", trailing: h(RN.Text, { style: { color: C.sub, fontSize: 21 } }, "›"), last: true, onPress: () => go("Automatic channels and DMs", AutoChannelsPage) })), h(CustomSection, { title: "History & cache" }, h(CustomRow, { title: "Translation history", subtitle: (settings.historyEntries || []).length + " saved locally", icon: "◷", trailing: h(RN.Text, { style: { color: C.sub, fontSize: 21 } }, "›"), onPress: () => go("Translation history", HistoryPage) }), h(RN.View, { style: { paddingHorizontal: 13, paddingBottom: 11 } }, h(CustomAction, { title: "Clear translation cache", secondary: true, onPress: () => {
-            cacheGeneration++;
-            cache.clear();
-            inFlight.clear();
-            useQuickTranslate.getState().updateSettings({ cacheEntries: [] });
-            persistLocalData();
-            toast("Translation cache cleared");
-        } }))), h(CustomSection, { title: "Chat composer" }, toggle("Show translate button", "Show a small translate action beside the + button.", settings.showButton !== false, (v) => { settings.updateSettings({ showButton: v }); notifyButton(); }), toggle("Translate on send", "Translate each message right before it is sent.", !!settings.translateOnSend, (v) => { settings.updateSettings({ translateOnSend: v }); notifyButton(); }), toggle("Translate as I type", "While Translate is active, replace the composer text with its translation after a short pause.", !!settings.liveTranslateInput, (v) => {
-        settings.updateSettings({ liveTranslateInput: v });
-        cancelLiveTranslation();
-        if (v && armed) {
-            const text = readInput();
-            resetLiveSource(text);
-            scheduleLiveTranslation(text, text, armed.tl, armed.sl);
-        }
-        else if (!v)
-            resetLiveSource();
-        notifyButton();
-    }), toggle("Keep translate active", "Tap once to keep translation enabled until you tap again.", !!settings.keepArmed, (v) => { settings.updateSettings({ keepArmed: v }); notifyButton(); }), h(CustomRow, { title: "Button position", subtitle: settings.anchor === "send" ? "Next to the Send button" : "Next to the + button", icon: "↔", trailing: h(RN.Text, { style: { color: C.sub, fontSize: 21 } }, "›"), onPress: () => {
+        toast("Translate a message to see its source and target codes"); }), h(CustomRow, { title: "Translation color", subtitle: translationColor(), trailing: h(RN.View, { style: { flexDirection: "row", alignItems: "center" } }, h(RN.View, { style: { width: 15, height: 15, borderRadius: 5, backgroundColor: translationColor(), marginRight: 9 } }), h(RN.Text, { style: { color: C.sub, fontSize: 21 } }, "›")), last: true, onPress: () => go("Translation color", ColorPicker) })), h(CustomSection, { title: "Incoming messages" }, toggle("Translate incoming messages", "Translate new messages only in the channels and DMs selected below.", !!settings.autoIncoming, (v) => settings.updateSettings({ autoIncoming: v })), toggle("Immersive incoming translations", "Show automatic translations below the original. This is separate from the main Immersive translation setting.", !!settings.autoIncomingImmersive, (v) => { settings.updateSettings({ autoIncomingImmersive: v }); refreshTranslated(); }), h(CustomRow, { title: "Automatic channels and DMs", subtitle: (settings.autoChannelIds || []).length + " selected", icon: "☷", trailing: h(RN.Text, { style: { color: C.sub, fontSize: 21 } }, "›"), last: true, onPress: () => go("Automatic channels and DMs", AutoChannelsPage) })), h(CustomSection, { title: "History & cache" }, h(CustomRow, { title: "Translation history", subtitle: (settings.historyEntries || []).length + " saved locally", icon: "◷", trailing: h(RN.Text, { style: { color: C.sub, fontSize: 21 } }, "›"), onPress: () => go("Translation history", HistoryPage) }), h(RN.View, { style: { paddingHorizontal: 13, paddingBottom: 11 } }, h(RN.Text, { style: { color: C.sub, fontSize: 12, marginTop: 10 } }, (settings.cacheEntries || []).length + " cached translations"), h(CustomAction, { title: "Clear translation cache", secondary: true, onPress: () => {
+            clearTranslationCache();
+        } }))), h(CustomSection, { title: "Chat composer" }, toggle("Show translate button", "Show a small translate action beside the + button.", settings.showButton !== false, (v) => { settings.updateSettings({ showButton: v }); notifyButton(); }), toggle("Keep translate active", "Tap once to keep translation enabled until you tap again.", !!settings.keepArmed, (v) => { settings.updateSettings({ keepArmed: v }); notifyButton(); }), h(CustomRow, { title: "Button position", subtitle: settings.anchor === "send" ? "Next to the Send button" : "Next to the + button", icon: "↔", trailing: h(RN.Text, { style: { color: C.sub, fontSize: 21 } }, "›"), onPress: () => {
             const sheets = safe(() => findByProps("showSimpleActionSheet"), null);
             if (!sheets?.showSimpleActionSheet) {
                 toast("Could not open position options");
@@ -1419,7 +1332,7 @@ function migrateSettings() {
     }
     if (stored.settingsVersion < 4) {
         stored.updateSettings({
-            liveTranslateInput: !!stored.translateDraft,
+            liveTranslateInput: undefined,
             translateDraft: undefined,
             settingsVersion: 4,
         });
@@ -1432,6 +1345,15 @@ function migrateSettings() {
             includeDMs: undefined,
             excludedChannelIds: undefined,
             settingsVersion: 5,
+        });
+        stored = useQuickTranslate.getState();
+    }
+    if (stored.settingsVersion < 6) {
+        stored.updateSettings({
+            immersive: true,
+            translateOnSend: undefined,
+            liveTranslateInput: undefined,
+            settingsVersion: 6,
         });
         stored = useQuickTranslate.getState();
     }
@@ -1471,8 +1393,6 @@ function onChannelSelect(e) {
     }
     if (armed) {
         armed = null;
-        cancelLiveTranslation();
-        resetLiveSource();
         notifyButton();
     }
 }
@@ -1480,7 +1400,7 @@ exports.default = {
     name: "QuickTranslate",
     description: "Translate messages and your own text with Google Translate or DeepL.",
     id: "quicktranslate",
-    version: "1.10.0",
+    version: "1.11.0",
     start() {
         renderErrors = 0;
         step("settingsHydration", waitForSettingsHydration);
@@ -1515,6 +1435,7 @@ exports.default = {
             renderUnpatch = null;
         }
         translations.clear();
+        cacheGeneration++;
         cache.clear();
         inFlight.clear();
         autoSeen.clear();
@@ -1525,8 +1446,6 @@ exports.default = {
         bridge.change = null;
         bridge.inst = null;
         armed = null;
-        cancelLiveTranslation();
-        resetLiveSource();
         lastOriginal = null;
     },
     settings: Settings,
