@@ -1310,7 +1310,7 @@ function patchChatButton() {
             if (React.isValidElement(ret)) {
                 const children = ret.props?.children;
                 const list = children == null ? [] : Array.isArray(children) ? children : [children];
-                return React.cloneElement(ret, { style: [ret.props?.style, { alignItems: "center" }] }, ...list, button);
+                return React.cloneElement(ret, { style: [ret.props?.style, { flexDirection: "row", flexWrap: "nowrap", alignItems: "center", alignSelf: "center" }] }, ...list, button);
             }
             return h(RN.View, { pointerEvents: "box-none", style: { flexDirection: "row", alignItems: "center" } }, ret, button);
         }));
