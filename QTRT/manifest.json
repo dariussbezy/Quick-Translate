@@ -1,8 +1,8 @@
 {
   "id": "quicktranslate",
   "name": "Quick Translate",
-  "description": "Translate messages with Google Translate or DeepL, including draft translation and bulk selection.",
-  "version": "1.15.3",
+  "description": "Translate incoming and outgoing messages, use auto-translate, and do more with Google Translate or DeepL. Check the plugin settings!",
+  "version": "1.0.0",
   "authors": [
     "dariussbezy"
   ],
