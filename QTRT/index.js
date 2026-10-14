@@ -11,7 +11,7 @@ const { ChannelStore, MessageStore, PrivateChannelSortStore, SelectedChannelStor
 /* ------------------------------------------------------------------ */
 /* constants + settings store                                          */
 /* ------------------------------------------------------------------ */
-const BUILD = "v1.15.1-rain";
+const BUILD = "v1.15.2-rain";
 const FLAG_TOGGLE = 0x04000000;
 const ACCENT = "#8EA1FF";
 const MAX_TRANSLATIONS = 300;
@@ -1068,6 +1068,8 @@ function TranslateButton(props) {
     const didLongPress = React.useRef(false);
     const pressTimer = React.useRef(null);
     const sheetProgress = React.useRef(new RN.Animated.Value(0)).current;
+    const backdropProgress = React.useRef(new RN.Animated.Value(0)).current;
+    const closingPanel = React.useRef(false);
     const buttonScale = React.useRef(new RN.Animated.Value(1)).current;
     const [, tick] = React.useState(0);
     React.useEffect(() => {
@@ -1079,8 +1081,13 @@ function TranslateButton(props) {
     React.useEffect(() => {
         if (!panelOpen)
             return;
+        closingPanel.current = false;
         sheetProgress.setValue(0);
-        RN.Animated.timing(sheetProgress, { toValue: 1, duration: 190, easing: RN.Easing.out(RN.Easing.cubic), useNativeDriver: true }).start();
+        backdropProgress.setValue(0);
+        RN.Animated.parallel([
+            RN.Animated.timing(sheetProgress, { toValue: 1, duration: 260, easing: RN.Easing.out(RN.Easing.cubic), useNativeDriver: true }),
+            RN.Animated.timing(backdropProgress, { toValue: 1, duration: 220, useNativeDriver: true }),
+        ]).start();
     }, [panelOpen]);
     if (settings.showButton === false)
         return null;
@@ -1143,6 +1150,7 @@ function TranslateButton(props) {
         setTarget(preferences.targetOut || "en");
         setQuery("");
         setPanelPage("main");
+        closingPanel.current = false;
         setPanelOpen(true);
     };
     const startPress = () => {
@@ -1173,10 +1181,51 @@ function TranslateButton(props) {
         didLongPress.current = false;
     };
     const closePanel = () => {
-        setPanelOpen(false);
-        setPanelPage("main");
-        setQuery("");
+        if (closingPanel.current)
+            return;
+        closingPanel.current = true;
+        RN.Animated.parallel([
+            RN.Animated.timing(sheetProgress, { toValue: 0, duration: 220, easing: RN.Easing.in(RN.Easing.cubic), useNativeDriver: true }),
+            RN.Animated.timing(backdropProgress, { toValue: 0, duration: 180, useNativeDriver: true }),
+        ]).start(({ finished }) => {
+            if (finished) {
+                setPanelOpen(false);
+                setPanelPage("main");
+                setQuery("");
+            }
+            closingPanel.current = false;
+        });
     };
+    const sheetTravel = Math.max(600, safe(() => RN.Dimensions.get("window").height, 800));
+    const sheetPanResponder = React.useRef(null);
+    if (!sheetPanResponder.current) {
+        sheetPanResponder.current = RN.PanResponder.create({
+            onStartShouldSetPanResponder: () => false,
+            onMoveShouldSetPanResponder: (_, gesture) => gesture.dy > 5 && Math.abs(gesture.dy) > Math.abs(gesture.dx) * 1.2,
+            onPanResponderMove: (_, gesture) => {
+                const progress = Math.max(0, Math.min(1, 1 - Math.max(0, gesture.dy) / sheetTravel));
+                sheetProgress.setValue(progress);
+                backdropProgress.setValue(progress);
+            },
+            onPanResponderRelease: (_, gesture) => {
+                if (gesture.dy > Math.max(90, sheetTravel * 0.16) || gesture.vy > 0.75) {
+                    closePanel();
+                    return;
+                }
+                RN.Animated.parallel([
+                    RN.Animated.spring(sheetProgress, { toValue: 1, speed: 20, bounciness: 0, useNativeDriver: true }),
+                    RN.Animated.timing(backdropProgress, { toValue: 1, duration: 140, useNativeDriver: true }),
+                ]).start();
+            },
+            onPanResponderTerminate: () => {
+                RN.Animated.parallel([
+                    RN.Animated.spring(sheetProgress, { toValue: 1, speed: 20, bounciness: 0, useNativeDriver: true }),
+                    RN.Animated.timing(backdropProgress, { toValue: 1, duration: 140, useNativeDriver: true }),
+                ]).start();
+            },
+            onPanResponderTerminationRequest: () => false,
+        });
+    }
     const favorites = (settings.favLangs || []).filter((code) => LANG_NAME.has(code));
     const currentDraft = readInput();
     const rememberedOriginal = lastOriginal != null && lastOriginalChannelId === currentChannelId() && lastTranslatedText === currentDraft ? lastOriginal : currentDraft;
@@ -1216,11 +1265,11 @@ function TranslateButton(props) {
             h(RN.Text, { key: "title", style: { color: paletteNow.text, fontSize: 22, fontWeight: "700", marginBottom: 4 } }, "Translate draft"),
             h(RN.Text, { key: "hint", style: { color: paletteNow.sub, fontSize: 14, marginBottom: 16 } }, "Translate this draft once. Your chat’s default language stays unchanged."),
             h(CustomSection, { key: "languages", title: "Languages" }, h(CustomRow, { title: "Translate from", subtitle: languageLabel(source), icon: "↗", onPress: () => { setQuery(""); setPanelPage("source"); }, trailing: h(RN.Text, { style: { color: paletteNow.sub, fontSize: 20 } }, "›") }), h(CustomRow, { title: "Translate to", subtitle: languageLabel(target), icon: "↙", last: true, onPress: () => { setQuery(""); setPanelPage("target"); }, trailing: h(RN.Text, { style: { color: paletteNow.sub, fontSize: 20 } }, "›") })),
-            favorites.length ? h(RN.ScrollView, { key: "favorites", horizontal: true, showsHorizontalScrollIndicator: false, style: { marginTop: 12, marginBottom: 8 } }, ...favorites.map((code) => h(RN.Pressable, {
+            favorites.length ? h(RN.ScrollView, { key: "favorites", horizontal: true, showsHorizontalScrollIndicator: false, style: { height: 46, flexGrow: 0, marginTop: 12, marginBottom: 8 }, contentContainerStyle: { alignItems: "center" } }, ...favorites.map((code) => h(RN.Pressable, {
                 key: code,
                 onPress: () => selectTargetLanguage(code),
-                style: { paddingHorizontal: 14, paddingVertical: 9, borderRadius: 18, marginRight: 8, backgroundColor: code === target ? paletteNow.blurple : paletteNow.chip },
-            }, h(RN.Text, { style: { color: paletteNow.text, fontSize: 14, fontWeight: "600" } }, languageLabel(code))))) : null,
+                style: { height: 40, minHeight: 40, paddingHorizontal: 14, borderRadius: 20, marginRight: 8, alignItems: "center", justifyContent: "center", backgroundColor: code === target ? paletteNow.blurple : paletteNow.chip },
+            }, h(RN.Text, { style: { color: paletteNow.text, fontSize: 14, lineHeight: 20, fontWeight: "600" } }, languageLabel(code))))) : null,
             h(CustomSection, { key: "once-section", title: "Translate once" }, h(RN.Text, { style: { color: paletteNow.sub, fontSize: 12, lineHeight: 16, paddingHorizontal: 14, paddingTop: 4 } }, "Arms the Translate button for one draft. After it translates, your usual language is restored."), h(RN.View, { style: { paddingHorizontal: 12, paddingBottom: 8 } }, h(CustomAction, { title: busy ? "Translating…" : "Activate once · " + langName(target), disabled: busy, onPress: activateOnce }))),
             h(CustomSection, { key: "permanent-section", title: "Permanent language" }, h(RN.Text, { style: { color: paletteNow.sub, fontSize: 12, lineHeight: 16, paddingHorizontal: 14, paddingTop: 4 } }, "Changes the usual target for this chat until you choose another language."), h(RN.View, { style: { paddingHorizontal: 12, paddingBottom: 8 } }, h(CustomAction, { title: "Set " + langName(target) + " as usual", secondary: true, onPress: setPermanentLanguage }))),
             settings.rememberDrafts !== false && currentDraft.trim() ? h(RN.Text, { key: "remember-help", style: { color: paletteNow.sub, fontSize: 12, lineHeight: 16, marginTop: 8 } }, savedDraft ? "This exact phrase is saved for this chat and language." : "Save this exact phrase for reuse in this chat and language.") : null,
@@ -1283,10 +1332,10 @@ function TranslateButton(props) {
         accessibilityActions: [{ name: "activate", label: "Translate" }],
         onAccessibilityTap: onPress,
         style: { width: 40, height: 40, borderRadius: 13, backgroundColor: highlightedTranslate ? paletteNow.blurple : "transparent", alignItems: "center", justifyContent: "center", opacity: busy ? 0.5 : 1, transform: [{ scale: buttonScale }] },
-    }, icon), panelOpen ? h(RN.Modal, { visible: true, transparent: true, animationType: "none", onRequestClose: closePanel }, h(RN.View, { style: { flex: 1, justifyContent: "flex-end" } }, h(RN.Pressable, { style: { position: "absolute", top: 0, bottom: 0, left: 0, right: 0, backgroundColor: "rgba(0,0,0,0.52)" }, onPress: closePanel }), h(RN.Animated.View, {
+    }, icon), panelOpen ? h(RN.Modal, { visible: true, transparent: true, animationType: "none", onRequestClose: closePanel }, h(RN.View, { style: { flex: 1, justifyContent: "flex-end" } }, h(RN.Animated.View, { pointerEvents: "box-none", style: { position: "absolute", top: 0, bottom: 0, left: 0, right: 0, backgroundColor: "rgba(0,0,0,0.52)", opacity: backdropProgress } }, h(RN.Pressable, { style: { flex: 1 }, onPress: closePanel })), h(RN.Animated.View, {
         style: { maxHeight: "88%", backgroundColor: paletteNow.bg, borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingHorizontal: 16, paddingTop: 14, paddingBottom: 28,
-            transform: [{ translateY: sheetProgress.interpolate({ inputRange: [0, 1], outputRange: [620, 0] }) }] },
-    }, h(RN.View, { style: { height: 38, marginBottom: 12, flexDirection: "row", alignItems: "center", justifyContent: "center" } }, h(RN.View, { style: { width: 38, height: 5, borderRadius: 3, backgroundColor: paletteNow.off } }), h(RN.Pressable, { onPress: closePanel, accessibilityRole: "button", accessibilityLabel: "Close translate menu", hitSlop: 10, style: { position: "absolute", top: 0, right: 0, width: 38, height: 38, borderRadius: 19, backgroundColor: paletteNow.chip, alignItems: "center", justifyContent: "center" } }, h(RN.Text, { style: { color: paletteNow.text, fontSize: 24, lineHeight: 28, fontWeight: "500" } }, String.fromCharCode(215)))), panelPage === "main" ? panelBody : h(RN.ScrollView, { keyboardShouldPersistTaps: "handled" }, ...panelBody)))) : null, bulkSelectionRequest ? h(BulkMessageSelector, { key: bulkSelectionRequest.nonce, request: bulkSelectionRequest, onClose: () => { bulkSelectionRequest = null; notifyButton(); } }) : null);
+            transform: [{ translateY: sheetProgress.interpolate({ inputRange: [0, 1], outputRange: [sheetTravel, 0] }) }] },
+    }, h(RN.View, { style: { height: 38, marginBottom: 12, flexDirection: "row", alignItems: "center", justifyContent: "center" } }, h(RN.View, { ...sheetPanResponder.panHandlers, accessibilityLabel: "Drag down to close translate menu", accessibilityHint: "Swipe down to dismiss", style: { width: 72, height: 38, alignItems: "center", justifyContent: "center" } }, h(RN.View, { style: { width: 38, height: 5, borderRadius: 3, backgroundColor: paletteNow.off } })), h(RN.Pressable, { onPress: closePanel, accessibilityRole: "button", accessibilityLabel: "Close translate menu", hitSlop: 10, style: { position: "absolute", top: 0, right: 0, width: 38, height: 38, borderRadius: 19, backgroundColor: paletteNow.chip, alignItems: "center", justifyContent: "center" } }, h(RN.Text, { style: { color: paletteNow.text, fontSize: 24, lineHeight: 28, fontWeight: "500" } }, String.fromCharCode(215)))), panelPage === "main" ? h(RN.ScrollView, { keyboardShouldPersistTaps: "handled", showsVerticalScrollIndicator: false, style: { flexShrink: 1 }, contentContainerStyle: { paddingBottom: 8 } }, ...panelBody) : h(RN.ScrollView, { keyboardShouldPersistTaps: "handled" }, ...panelBody)))) : null, bulkSelectionRequest ? h(BulkMessageSelector, { key: bulkSelectionRequest.nonce, request: bulkSelectionRequest, onClose: () => { bulkSelectionRequest = null; notifyButton(); } }) : null);
 }
 function patchChatButton() {
     const h = React.createElement;
