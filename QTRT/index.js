@@ -11,7 +11,7 @@ const { ChannelStore, MessageStore, PrivateChannelSortStore, SelectedChannelStor
 /* ------------------------------------------------------------------ */
 /* constants + settings store                                          */
 /* ------------------------------------------------------------------ */
-const BUILD = "v1.15.0-rain";
+const BUILD = "v1.14.0-rain";
 const FLAG_TOGGLE = 0x04000000;
 const ACCENT = "#8EA1FF";
 const MAX_TRANSLATIONS = 300;
@@ -66,6 +66,7 @@ const { useStore: useQuickTranslate, settings: qt } = createPluginStore("quicktr
     showSourceLanguage: false,
     autoChannelIds: [],
     autoIncomingImmersive: true,
+    quickTargets: {},
     protectedWords: [],
     historyEntries: [],
     cacheEntries: [],
@@ -131,6 +132,9 @@ function currentChannelId() {
 function getChatLanguages(channelId = currentChannelId()) {
     const stored = channelId && qt.rememberLanguagesPerChat !== false ? qt.chatLanguages?.[channelId] : null;
     return { sourceOut: stored?.sourceOut || qt.sourceOut || "auto", targetOut: stored?.targetOut || qt.targetOut || "en" };
+}
+function getQuickTarget(channelId = currentChannelId()) {
+    return channelId ? useQuickTranslate.getState().quickTargets?.[channelId] || null : null;
 }
 function saveChatLanguages(channelId, patch) {
     if (!channelId || qt.rememberLanguagesPerChat === false) {
@@ -608,24 +612,17 @@ function patchSend() {
         return;
     unpatches.push(instead("sendMessage", Messages, (args, orig) => {
         let pending = null;
-        let oneShotJob = null;
-        let oneShotTranslated = false;
         try {
             const msg = args[1];
             const job = qt.draftBeforeSend === false ? armed : null;
             if (job && msg && typeof msg.content === "string" && msg.content.trim()) {
-                if (job.oneShot)
-                    oneShotJob = job;
-                else if (!qt.keepArmed) {
+                if (!qt.keepArmed) {
                     armed = null;
                     notifyButton();
                 }
                 pending = translate(msg.content, job.tl, job.sl, false, currentChannelId()).then(r => {
-                    if (!r.same) {
+                    if (!r.same)
                         args[1] = Object.assign({}, msg, { content: r.text });
-                        if (job.oneShot)
-                            oneShotTranslated = true;
-                    }
                 });
             }
         }
@@ -641,10 +638,6 @@ function patchSend() {
                     lastTranslatedText = null;
                 }
                 bridge.text = "";
-                if (oneShotJob && oneShotTranslated) {
-                    armed = oneShotJob.resume || null;
-                    notifyButton();
-                }
             };
             const result = orig(...args);
             if (result && typeof result.then === "function")
@@ -879,7 +872,7 @@ function decorate(row, input) {
     const rawSource = String(tr.src || "").toLowerCase();
     const sourceCode = rawSource === "zh-cn" ? "zh-CN" : rawSource === "zh-tw" ? "zh-TW" : rawSource.split("-")[0];
     const sourceHint = qt.showSourceLanguage && sourceCode && sourceCode !== "auto"
-        ? [{ type: "text", content: "\n" + langName(sourceCode) + " → " + langName(String(tr.tl || "")) + "\n", color: palette().sub, __tr: true }]
+        ? [{ type: "text", content: "\n-# " + langName(sourceCode) + " → " + langName(String(tr.tl || "")) + "\n", fontSize: 9, color: palette().sub, __tr: true }]
         : [];
     const immersive = tr.autoIncoming ? qt.autoIncomingImmersive : (tr.immersive ?? qt.immersive);
     if (immersive)
@@ -1063,7 +1056,7 @@ function TranslateButton(props) {
     const [panelOpen, setPanelOpen] = React.useState(false);
     const [panelPage, setPanelPage] = React.useState("main");
     const [source, setSource] = React.useState(getChatLanguages().sourceOut || "auto");
-    const [target, setTarget] = React.useState(getChatLanguages().targetOut || "en");
+    const [target, setTarget] = React.useState(getQuickTarget() || getChatLanguages().targetOut || "en");
     const [query, setQuery] = React.useState("");
     const didLongPress = React.useRef(false);
     const pressTimer = React.useRef(null);
@@ -1114,10 +1107,9 @@ function TranslateButton(props) {
             return;
         }
         if (armed && props.position === "send" && settings.draftBeforeSend !== false) {
-            const job = armed;
-            run(job.tl, job.sl).then(ok => {
+            run(armed.tl, armed.sl).then(ok => {
                 if (ok) {
-                    armed = job.oneShot ? (job.resume || null) : null;
+                    armed = null;
                     notifyButton();
                 }
             });
@@ -1140,7 +1132,7 @@ function TranslateButton(props) {
         didLongPress.current = true;
         const preferences = getChatLanguages();
         setSource(preferences.sourceOut || "auto");
-        setTarget(preferences.targetOut || "en");
+        setTarget(getQuickTarget() || preferences.targetOut || "en");
         setQuery("");
         setPanelPage("main");
         setPanelOpen(true);
@@ -1188,26 +1180,19 @@ function TranslateButton(props) {
         setTarget(code);
     };
     const confirmTargetLanguage = () => {
+        const channelId = currentChannelId();
+        if (channelId) {
+            const quickTargets = Object.assign({}, useQuickTranslate.getState().quickTargets || {});
+            quickTargets[channelId] = target;
+            useQuickTranslate.getState().updateSettings({ quickTargets });
+        }
+        if (!readInput().trim()) {
+            armed = { tl: target, sl: source };
+            notifyButton();
+            toast("One-time draft translation set to " + langName(target));
+        }
         setPanelPage("main");
         setQuery("");
-    };
-    const activateOnce = () => {
-        const resume = armed?.oneShot ? armed.resume || null : armed;
-        armed = { tl: target, sl: source, oneShot: true, resume };
-        notifyButton();
-        closePanel();
-        toast("Translate once is ready. Translate the draft to " + langName(target) + "; your usual language will return after.");
-    };
-    const setPermanentLanguage = () => {
-        const channelId = currentChannelId();
-        saveChatLanguages(channelId, { targetOut: target });
-        if (armed?.oneShot)
-            armed = { ...armed, resume: { tl: target, sl: source } };
-        else if (armed)
-            armed = { tl: target, sl: source };
-        notifyButton();
-        closePanel();
-        toast(langName(target) + " is now the usual language for this chat");
     };
     const languageOptions = (panelPage === "source" ? sourceLanguages : LANGS)
         .filter(([code, name]) => !query.trim() || name.toLowerCase().includes(query.trim().toLowerCase()) || code.toLowerCase().includes(query.trim().toLowerCase()));
@@ -1221,8 +1206,7 @@ function TranslateButton(props) {
                 onPress: () => selectTargetLanguage(code),
                 style: { paddingHorizontal: 14, paddingVertical: 9, borderRadius: 18, marginRight: 8, backgroundColor: code === target ? paletteNow.blurple : paletteNow.chip },
             }, h(RN.Text, { style: { color: paletteNow.text, fontSize: 14, fontWeight: "600" } }, languageLabel(code))))) : null,
-            h(CustomSection, { key: "once-section", title: "Translate once" }, h(RN.Text, { style: { color: paletteNow.sub, fontSize: 12, lineHeight: 16, paddingHorizontal: 14, paddingTop: 4 } }, "Arms the Translate button for one draft. After it translates, your usual language is restored."), h(RN.View, { style: { paddingHorizontal: 12, paddingBottom: 8 } }, h(CustomAction, { title: busy ? "Translating…" : "Activate once · " + langName(target), disabled: busy, onPress: activateOnce }))),
-            h(CustomSection, { key: "permanent-section", title: "Permanent language" }, h(RN.Text, { style: { color: paletteNow.sub, fontSize: 12, lineHeight: 16, paddingHorizontal: 14, paddingTop: 4 } }, "Changes the usual target for this chat until you choose another language."), h(RN.View, { style: { paddingHorizontal: 12, paddingBottom: 8 } }, h(CustomAction, { title: "Set " + langName(target) + " as usual", secondary: true, onPress: setPermanentLanguage }))),
+            h(CustomAction, { key: "translate", title: busy ? "Translating…" : "Translate once", disabled: busy, onPress: () => { closePanel(); run(target, source); } }),
             settings.rememberDrafts !== false && currentDraft.trim() ? h(RN.Text, { key: "remember-help", style: { color: paletteNow.sub, fontSize: 12, lineHeight: 16, marginTop: 8 } }, savedDraft ? "This exact phrase is saved for this chat and language." : "Save this exact phrase for reuse in this chat and language.") : null,
             settings.rememberDrafts !== false && currentDraft.trim() && !savedDraft ? h(CustomAction, { key: "remember", title: busy ? "Translating…" : "Translate and remember", disabled: busy, secondary: true, onPress: () => {
                     const original = readInput();
@@ -1265,7 +1249,7 @@ function TranslateButton(props) {
                     setPanelPage("main");
                     setQuery("");
                 } })))),
-            panelPage === "target" ? h(CustomAction, { key: "confirm-target", title: "Confirm " + langName(target), onPress: confirmTargetLanguage }) : null,
+            panelPage === "target" ? h(CustomAction, { key: "confirm-target", title: "Use " + langName(target) + " for this chat", onPress: confirmTargetLanguage }) : null,
         ];
     return h(RN.View, { pointerEvents: "box-none", collapsable: false, style: { width: 40, height: 40, marginRight: 4, alignSelf: "center", flexShrink: 0 } }, h(RN.Animated.View, {
         onStartShouldSetResponder: () => !busy,
@@ -1306,19 +1290,7 @@ function patchChatButton() {
         unpatches.push(after("render", actions.type, (_, ret) => {
             if (!ret)
                 return ret;
-            const button = h(TranslateButton, { key: "qt-button-actions", position: "actions" });
-            if (React.isValidElement(ret)) {
-                const children = ret.props?.children;
-                const list = children == null ? [] : Array.isArray(children) ? children : [children];
-                return React.cloneElement(ret, { style: [ret.props?.style, { flexDirection: "row", flexWrap: "nowrap", alignItems: "center", alignSelf: "center" }] }, ...list, button);
-            }
-            return h(RN.View, { pointerEvents: "box-none", style: { flexDirection: "row", alignItems: "center" } }, ret, button);
-        }));
-    if (rightActions?.type)
-        unpatches.push(after("render", rightActions.type, (_, ret) => {
-            if (!React.isValidElement(ret))
-                return ret;
-            return React.cloneElement(ret, { style: [ret.props?.style, { alignItems: "center", alignSelf: "center" }] });
+            return h(RN.View, { pointerEvents: "box-none", collapsable: false, style: { flexDirection: "row", alignItems: "center", overflow: "visible" } }, ret, h(TranslateButton, { key: "qt-button-actions", position: "actions" }));
         }));
     if (sendButton?.type)
         unpatches.push(after("render", sendButton.type, (_, ret) => {
@@ -1340,9 +1312,7 @@ function ComposerSendSlot(props) {
     const showTranslate = settings.anchor === "send" || replaceSend;
     if (!showTranslate)
         return props.children;
-    if (replaceSend)
-        return h(RN.View, { pointerEvents: "box-none", collapsable: false, style: { position: "relative", alignItems: "center", justifyContent: "center", alignSelf: "center" } }, h(RN.View, { pointerEvents: "none", accessible: false, accessibilityElementsHidden: true, importantForAccessibility: "no-hide-descendants", style: { opacity: 0 } }, props.children), h(RN.View, { pointerEvents: "box-none", style: { position: "absolute", top: 0, bottom: 0, left: 0, right: 0, alignItems: "center", justifyContent: "center" } }, props.button));
-    return h(RN.View, { pointerEvents: "box-none", style: { flexDirection: "row", alignItems: "center", alignSelf: "center" } }, props.button, props.children);
+    return h(RN.View, { pointerEvents: "box-none", collapsable: false, style: { flexDirection: "row", alignItems: "center", alignSelf: "center", height: 40, overflow: "visible" } }, showTranslate ? props.button : null, replaceSend ? null : props.children);
 }
 function LangPicker(props) {
     const h = React.createElement;
@@ -1576,7 +1546,7 @@ function Settings() {
         trailing: settings.provider !== "deepl" ? h(RN.Text, { style: { color: C.blurple, fontWeight: "800", fontSize: 18 } }, "✓") : null,
         onPress: () => settings.updateSettings({ provider: "google" }) }), h(CustomRow, { title: "DeepL", subtitle: "Uses your personal API key · Google fallback", icon: "✦", last: settings.provider === "deepl",
         trailing: settings.provider === "deepl" ? h(RN.Text, { style: { color: C.blurple, fontWeight: "800", fontSize: 18 } }, "✓") : null,
-        onPress: () => settings.updateSettings({ provider: "deepl" }) }), settings.provider === "deepl" ? h(RN.View, { style: { padding: 14, borderTopWidth: 1, borderTopColor: C.card2 } }, h(RN.Text, { style: { color: C.text, fontSize: 14, fontWeight: "600", marginBottom: 8 } }, "DeepL API key"), h(CustomInput, { value: settings.deeplApiKey || "", placeholder: "Paste your API key", autoCapitalize: "none", autoCorrect: false, secureTextEntry: true, onChangeText: (deeplApiKey) => settings.updateSettings({ deeplApiKey }) }), h(RN.Text, { style: { color: C.sub, fontSize: 12, marginTop: 7, lineHeight: 17 } }, "Your key is stored in this plugin’s local settings. Free API keys ending in :fx are supported.")) : null), h(CustomSection, { title: "Translation rules" }, h(RN.View, { style: { padding: 14 } }, h(RN.Text, { style: { color: C.text, fontSize: 15, fontWeight: "600", marginBottom: 5 } }, "Keep words unchanged"), h(RN.Text, { style: { color: C.sub, fontSize: 12, lineHeight: 16, marginBottom: 9 } }, "Separate words with commas or new lines. Matching whole words keep their original form."), h(CustomInput, { value: (settings.protectedWords || []).join(", "), placeholder: "Add words separated by commas", multiline: true, textAlignVertical: "top", onChangeText: (value) => {
+        onPress: () => settings.updateSettings({ provider: "deepl" }) }), settings.provider === "deepl" ? h(RN.View, { style: { padding: 14, borderTopWidth: 1, borderTopColor: C.card2 } }, h(RN.Text, { style: { color: C.text, fontSize: 14, fontWeight: "600", marginBottom: 8 } }, "DeepL API key"), h(CustomInput, { value: settings.deeplApiKey || "", placeholder: "Paste your API key", autoCapitalize: "none", autoCorrect: false, secureTextEntry: true, onChangeText: (deeplApiKey) => settings.updateSettings({ deeplApiKey }) }), h(RN.Text, { style: { color: C.sub, fontSize: 12, marginTop: 7, lineHeight: 17 } }, "Your key is stored in this plugin’s local settings. Free API keys ending in :fx are supported.")) : null), h(CustomSection, { title: "Translation rules" }, h(RN.View, { style: { padding: 14 } }, h(RN.Text, { style: { color: C.text, fontSize: 15, fontWeight: "600", marginBottom: 5 } }, "Keep words unchanged"), h(RN.Text, { style: { color: C.sub, fontSize: 12, lineHeight: 16, marginBottom: 9 } }, "Separate words with commas or new lines. Matching whole words keep their original form."), h(CustomInput, { value: (settings.protectedWords || []).join(", "), placeholder: "vouch, username, product name", multiline: true, textAlignVertical: "top", onChangeText: (value) => {
             const protectedWords = Array.from(new Set(String(value || "").split(/[,\n]+/).map((word) => word.trim()).filter(Boolean))).slice(0, 100);
             settings.updateSettings({ protectedWords });
         }, style: { minHeight: 88, paddingVertical: 11 } }))), h(CustomSection, { title: "Languages" }, h(CustomRow, { title: "Translate my messages to", subtitle: languageLabel(settings.targetOut), icon: "↗", trailing: h(RN.Text, { style: { color: C.sub, fontSize: 21 } }, "›"), onPress: () => go("Translate my messages to", TargetOutPage) }), h(CustomRow, { title: "My messages are written in", subtitle: languageLabel(settings.sourceOut), icon: "↙", trailing: h(RN.Text, { style: { color: C.sub, fontSize: 21 } }, "›"), onPress: () => go("My messages are written in", SourceOutPage) }), h(CustomRow, { title: "Translate messages to", subtitle: languageLabel(settings.targetIn), icon: "文", trailing: h(RN.Text, { style: { color: C.sub, fontSize: 21 } }, "›"), onPress: () => go("Translate messages to", TargetInPage) }), h(CustomRow, { title: "Quick languages", subtitle: (settings.favLangs || []).length + " of " + MAX_FAVS + " selected", icon: "★", last: true, trailing: h(RN.Text, { style: { color: C.sub, fontSize: 21 } }, "›"), onPress: () => go("Quick languages", FavPicker) })), h(CustomSection, { title: "Appearance" }, toggle("Immersive translation", "Show the translation below the original message. Turn off to replace its text.", !!settings.immersive, (v) => { settings.updateSettings({ immersive: v }); refreshTranslated(); }), toggle("Show detected source language", "Show a compact source → target code below the translation.", !!settings.showSourceLanguage, (v) => { settings.updateSettings({ showSourceLanguage: v }); refreshTranslated(); if (v)
@@ -1674,13 +1644,10 @@ function migrateSettings() {
     if (stored.settingsVersion < 9) {
         stored.updateSettings({
             autoIncoming: undefined,
+            quickTargets: stored.quickTargets && typeof stored.quickTargets === "object" ? stored.quickTargets : {},
             protectedWords: Array.isArray(stored.protectedWords) ? stored.protectedWords : [],
             settingsVersion: 9,
         });
-        stored = useQuickTranslate.getState();
-    }
-    if (stored.settingsVersion < 10) {
-        stored.updateSettings({ quickTargets: undefined, settingsVersion: 10 });
         stored = useQuickTranslate.getState();
     }
     if (stored.anchor !== "actions" && stored.anchor !== "send")
