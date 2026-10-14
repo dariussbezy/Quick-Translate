@@ -11,7 +11,7 @@ const { ChannelStore, MessageStore, PrivateChannelSortStore, SelectedChannelStor
 /* ------------------------------------------------------------------ */
 /* constants + settings store                                          */
 /* ------------------------------------------------------------------ */
-const BUILD = "v1.15.2-rain";
+const BUILD = "v1.15.3-rain";
 const FLAG_TOGGLE = 0x04000000;
 const ACCENT = "#8EA1FF";
 const MAX_TRANSLATIONS = 300;
@@ -52,8 +52,6 @@ const { useStore: useQuickTranslate, settings: qt } = createPluginStore("quicktr
     showButton: true,
     draftBeforeSend: true,
     saveHistory: true,
-    rememberDrafts: true,
-    rememberedDrafts: {},
     rememberLanguagesPerChat: true,
     chatLanguages: {},
     highlightDraftButton: true,
@@ -242,7 +240,7 @@ const languageLabel = (code, name = langName(code)) => (LANGUAGE_FLAGS[code] ? L
 function CustomSection(props) {
     const h = React.createElement;
     const C = palette();
-    return h(RN.View, { style: { marginBottom: 22 } }, h(RN.Text, { style: { color: C.sub, fontSize: 13, fontWeight: "700", letterSpacing: 0.4, marginHorizontal: 5, marginBottom: 9, textTransform: "uppercase" } }, props.title), h(RN.View, { style: { backgroundColor: C.card, borderRadius: 17, overflow: "hidden", borderWidth: 1, borderColor: C.card2 } }, props.children));
+    return h(RN.View, { style: { marginBottom: props.compact ? 14 : 22 } }, h(RN.Text, { style: { color: C.sub, fontSize: 13, fontWeight: "700", letterSpacing: 0.4, marginHorizontal: 5, marginBottom: 9, textTransform: "uppercase" } }, props.title), h(RN.View, { style: { backgroundColor: C.card, borderRadius: 17, overflow: "hidden", borderWidth: 1, borderColor: C.card2 } }, props.children));
 }
 function CustomRow(props) {
     const h = React.createElement;
@@ -548,9 +546,6 @@ function writeInput(text) {
         bridge.text = text;
     return ok;
 }
-function rememberedDraftKey(channelId, text, target) {
-    return [channelId || "unknown", target, text.trim()].join("|");
-}
 function translateCurrentText(tl, sl) {
     const text = readInput();
     if (!text.trim()) {
@@ -562,17 +557,6 @@ function translateCurrentText(tl, sl) {
         return Promise.resolve(false);
     }
     const channelId = currentChannelId();
-    const remembered = qt.rememberDrafts !== false ? qt.rememberedDrafts?.[rememberedDraftKey(channelId, text, tl)] : null;
-    if (remembered?.translated) {
-        if (!writeInput(remembered.translated)) {
-            toast("Could not update the chat box; the original text is unchanged");
-            return Promise.resolve(false);
-        }
-        lastOriginal = text;
-        lastOriginalChannelId = channelId;
-        lastTranslatedText = remembered.translated;
-        return Promise.resolve(true);
-    }
     return translate(text, tl, sl, false, channelId).then(result => {
         if (result.same) {
             toast("Already in " + langName(tl));
@@ -1201,14 +1185,16 @@ function TranslateButton(props) {
     if (!sheetPanResponder.current) {
         sheetPanResponder.current = RN.PanResponder.create({
             onStartShouldSetPanResponder: () => false,
-            onMoveShouldSetPanResponder: (_, gesture) => gesture.dy > 5 && Math.abs(gesture.dy) > Math.abs(gesture.dx) * 1.2,
+            onMoveShouldSetPanResponder: (_, gesture) => gesture.dy > 4 && Math.abs(gesture.dy) > Math.abs(gesture.dx) * 1.15,
+            onMoveShouldSetPanResponderCapture: (_, gesture) => gesture.dy > 4 && Math.abs(gesture.dy) > Math.abs(gesture.dx) * 1.15,
+            onShouldBlockNativeResponder: () => true,
             onPanResponderMove: (_, gesture) => {
                 const progress = Math.max(0, Math.min(1, 1 - Math.max(0, gesture.dy) / sheetTravel));
                 sheetProgress.setValue(progress);
                 backdropProgress.setValue(progress);
             },
             onPanResponderRelease: (_, gesture) => {
-                if (gesture.dy > Math.max(90, sheetTravel * 0.16) || gesture.vy > 0.75) {
+                if (gesture.dy > Math.max(72, sheetTravel * 0.10) || gesture.vy > 0.5) {
                     closePanel();
                     return;
                 }
@@ -1227,10 +1213,6 @@ function TranslateButton(props) {
         });
     }
     const favorites = (settings.favLangs || []).filter((code) => LANG_NAME.has(code));
-    const currentDraft = readInput();
-    const rememberedOriginal = lastOriginal != null && lastOriginalChannelId === currentChannelId() && lastTranslatedText === currentDraft ? lastOriginal : currentDraft;
-    const currentDraftKey = rememberedDraftKey(currentChannelId(), rememberedOriginal, target);
-    const savedDraft = rememberedOriginal.trim() ? useQuickTranslate.getState().rememberedDrafts?.[currentDraftKey] : null;
     const paletteNow = palette();
     const sourceLanguages = [["auto", "Auto-detect"], ...LANGS];
     const selectTargetLanguage = (code) => {
@@ -1264,37 +1246,20 @@ function TranslateButton(props) {
         ? [
             h(RN.Text, { key: "title", style: { color: paletteNow.text, fontSize: 22, fontWeight: "700", marginBottom: 4 } }, "Translate draft"),
             h(RN.Text, { key: "hint", style: { color: paletteNow.sub, fontSize: 14, marginBottom: 16 } }, "Translate this draft once. Your chat’s default language stays unchanged."),
-            h(CustomSection, { key: "languages", title: "Languages" }, h(CustomRow, { title: "Translate from", subtitle: languageLabel(source), icon: "↗", onPress: () => { setQuery(""); setPanelPage("source"); }, trailing: h(RN.Text, { style: { color: paletteNow.sub, fontSize: 20 } }, "›") }), h(CustomRow, { title: "Translate to", subtitle: languageLabel(target), icon: "↙", last: true, onPress: () => { setQuery(""); setPanelPage("target"); }, trailing: h(RN.Text, { style: { color: paletteNow.sub, fontSize: 20 } }, "›") })),
-            favorites.length ? h(RN.ScrollView, { key: "favorites", horizontal: true, showsHorizontalScrollIndicator: false, style: { height: 46, flexGrow: 0, marginTop: 12, marginBottom: 8 }, contentContainerStyle: { alignItems: "center" } }, ...favorites.map((code) => h(RN.Pressable, {
+            h(CustomSection, { key: "languages", title: "Languages", compact: true }, h(CustomRow, { title: "Translate from", subtitle: languageLabel(source), icon: "↗", onPress: () => { setQuery(""); setPanelPage("source"); }, trailing: h(RN.Text, { style: { color: paletteNow.sub, fontSize: 20 } }, "›") }), h(CustomRow, { title: "Translate to", subtitle: languageLabel(target), icon: "↙", last: true, onPress: () => { setQuery(""); setPanelPage("target"); }, trailing: h(RN.Text, { style: { color: paletteNow.sub, fontSize: 20 } }, "›") })),
+            favorites.length ? h(RN.View, { key: "favorites", style: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", marginTop: 8, marginBottom: 4 } }, ...favorites.map((code) => h(RN.Pressable, {
                 key: code,
                 onPress: () => selectTargetLanguage(code),
-                style: { height: 40, minHeight: 40, paddingHorizontal: 14, borderRadius: 20, marginRight: 8, alignItems: "center", justifyContent: "center", backgroundColor: code === target ? paletteNow.blurple : paletteNow.chip },
-            }, h(RN.Text, { style: { color: paletteNow.text, fontSize: 14, lineHeight: 20, fontWeight: "600" } }, languageLabel(code))))) : null,
-            h(CustomSection, { key: "once-section", title: "Translate once" }, h(RN.Text, { style: { color: paletteNow.sub, fontSize: 12, lineHeight: 16, paddingHorizontal: 14, paddingTop: 4 } }, "Arms the Translate button for one draft. After it translates, your usual language is restored."), h(RN.View, { style: { paddingHorizontal: 12, paddingBottom: 8 } }, h(CustomAction, { title: busy ? "Translating…" : "Activate once · " + langName(target), disabled: busy, onPress: activateOnce }))),
-            h(CustomSection, { key: "permanent-section", title: "Permanent language" }, h(RN.Text, { style: { color: paletteNow.sub, fontSize: 12, lineHeight: 16, paddingHorizontal: 14, paddingTop: 4 } }, "Changes the usual target for this chat until you choose another language."), h(RN.View, { style: { paddingHorizontal: 12, paddingBottom: 8 } }, h(CustomAction, { title: "Set " + langName(target) + " as usual", secondary: true, onPress: setPermanentLanguage }))),
-            settings.rememberDrafts !== false && currentDraft.trim() ? h(RN.Text, { key: "remember-help", style: { color: paletteNow.sub, fontSize: 12, lineHeight: 16, marginTop: 8 } }, savedDraft ? "This exact phrase is saved for this chat and language." : "Save this exact phrase for reuse in this chat and language.") : null,
-            settings.rememberDrafts !== false && currentDraft.trim() && !savedDraft ? h(CustomAction, { key: "remember", title: busy ? "Translating…" : "Translate and remember", disabled: busy, secondary: true, onPress: () => {
-                    const original = readInput();
-                    const channelId = currentChannelId();
-                    closePanel();
-                    run(target, source).then(ok => {
-                        if (!ok)
-                            return;
-                        const rememberedDrafts = Object.assign({}, useQuickTranslate.getState().rememberedDrafts || {});
-                        rememberedDrafts[rememberedDraftKey(channelId, original, target)] = { original, translated: readInput(), target, source };
-                        useQuickTranslate.getState().updateSettings({ rememberedDrafts });
-                        toast("Translation saved for this chat");
-                    });
-                } }) : null,
-            settings.rememberDrafts !== false && savedDraft ? h(CustomAction, { key: "remove-saved", title: "Remove saved", secondary: true, onPress: () => {
-                    const rememberedDrafts = Object.assign({}, useQuickTranslate.getState().rememberedDrafts || {});
-                    delete rememberedDrafts[currentDraftKey];
-                    useQuickTranslate.getState().updateSettings({ rememberedDrafts });
-                    toast("Saved translation removed");
-                } }) : null,
+                accessibilityRole: "button",
+                accessibilityLabel: "Translate to " + langName(code),
+                accessibilityState: { selected: code === target },
+                style: { minHeight: 40, paddingHorizontal: 13, paddingVertical: 8, borderRadius: 20, marginRight: 7, marginBottom: 7, alignItems: "center", justifyContent: "center", backgroundColor: code === target ? paletteNow.blurple : paletteNow.chip },
+            }, h(RN.Text, { numberOfLines: 1, adjustsFontSizeToFit: true, style: { color: paletteNow.text, fontSize: 13, fontWeight: "600" } }, languageLabel(code))))) : null,
+            h(CustomSection, { key: "once-section", title: "Translate once", compact: true }, h(RN.Text, { style: { color: paletteNow.sub, fontSize: 12, lineHeight: 16, paddingHorizontal: 14, paddingTop: 4 } }, "Arms the Translate button for one draft. After it translates, your usual language is restored."), h(RN.View, { style: { paddingHorizontal: 12, paddingBottom: 8 } }, h(CustomAction, { title: busy ? "Translating…" : "Activate once · " + langName(target), disabled: busy, onPress: activateOnce }))),
+            h(CustomSection, { key: "permanent-section", title: "Permanent language", compact: true }, h(RN.Text, { style: { color: paletteNow.sub, fontSize: 12, lineHeight: 16, paddingHorizontal: 14, paddingTop: 4 } }, "Changes the usual target for this chat until you choose another language."), h(RN.View, { style: { paddingHorizontal: 12, paddingBottom: 8 } }, h(CustomAction, { title: "Set " + langName(target) + " as usual", secondary: true, onPress: setPermanentLanguage }))),
             lastOriginal != null ? h(CustomAction, { key: "restore", title: "Restore original text", secondary: true, onPress: () => { closePanel(); restoreOriginal(); } }) : null,
             armed ? h(CustomAction, { key: "disable", title: "Turn off Translate", secondary: true, onPress: () => { armed = null; notifyButton(); closePanel(); } }) : null,
-            h(CustomAction, { key: "close", title: "Close", secondary: true, onPress: closePanel }),
+            
         ]
         : [
             h(CustomAction, { key: "back", title: "‹  Back", secondary: true, onPress: () => { setPanelPage("main"); setQuery(""); } }),
@@ -1335,7 +1300,7 @@ function TranslateButton(props) {
     }, icon), panelOpen ? h(RN.Modal, { visible: true, transparent: true, animationType: "none", onRequestClose: closePanel }, h(RN.View, { style: { flex: 1, justifyContent: "flex-end" } }, h(RN.Animated.View, { pointerEvents: "box-none", style: { position: "absolute", top: 0, bottom: 0, left: 0, right: 0, backgroundColor: "rgba(0,0,0,0.52)", opacity: backdropProgress } }, h(RN.Pressable, { style: { flex: 1 }, onPress: closePanel })), h(RN.Animated.View, {
         style: { maxHeight: "88%", backgroundColor: paletteNow.bg, borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingHorizontal: 16, paddingTop: 14, paddingBottom: 28,
             transform: [{ translateY: sheetProgress.interpolate({ inputRange: [0, 1], outputRange: [sheetTravel, 0] }) }] },
-    }, h(RN.View, { style: { height: 38, marginBottom: 12, flexDirection: "row", alignItems: "center", justifyContent: "center" } }, h(RN.View, { ...sheetPanResponder.panHandlers, accessibilityLabel: "Drag down to close translate menu", accessibilityHint: "Swipe down to dismiss", style: { width: 72, height: 38, alignItems: "center", justifyContent: "center" } }, h(RN.View, { style: { width: 38, height: 5, borderRadius: 3, backgroundColor: paletteNow.off } })), h(RN.Pressable, { onPress: closePanel, accessibilityRole: "button", accessibilityLabel: "Close translate menu", hitSlop: 10, style: { position: "absolute", top: 0, right: 0, width: 38, height: 38, borderRadius: 19, backgroundColor: paletteNow.chip, alignItems: "center", justifyContent: "center" } }, h(RN.Text, { style: { color: paletteNow.text, fontSize: 24, lineHeight: 28, fontWeight: "500" } }, String.fromCharCode(215)))), panelPage === "main" ? h(RN.ScrollView, { keyboardShouldPersistTaps: "handled", showsVerticalScrollIndicator: false, style: { flexShrink: 1 }, contentContainerStyle: { paddingBottom: 8 } }, ...panelBody) : h(RN.ScrollView, { keyboardShouldPersistTaps: "handled" }, ...panelBody)))) : null, bulkSelectionRequest ? h(BulkMessageSelector, { key: bulkSelectionRequest.nonce, request: bulkSelectionRequest, onClose: () => { bulkSelectionRequest = null; notifyButton(); } }) : null);
+    }, h(RN.View, { ...sheetPanResponder.panHandlers, accessibilityLabel: "Drag down to close translate menu", accessibilityHint: "Swipe down to dismiss", style: { height: 44, marginBottom: 10, flexDirection: "row", alignItems: "center", justifyContent: "center" } }, h(RN.View, { style: { width: 72, height: 44, alignItems: "center", justifyContent: "center" } }, h(RN.View, { style: { width: 38, height: 5, borderRadius: 3, backgroundColor: paletteNow.off } })), h(RN.Pressable, { onPress: closePanel, accessibilityRole: "button", accessibilityLabel: "Close translate menu", hitSlop: 10, style: { position: "absolute", top: 0, right: 0, width: 38, height: 38, borderRadius: 19, backgroundColor: paletteNow.chip, alignItems: "center", justifyContent: "center" } }, h(RN.Text, { style: { color: paletteNow.text, fontSize: 24, lineHeight: 28, fontWeight: "500" } }, String.fromCharCode(215)))), panelPage === "main" ? h(RN.ScrollView, { keyboardShouldPersistTaps: "handled", showsVerticalScrollIndicator: false, style: { flexShrink: 1 }, contentContainerStyle: { paddingBottom: 8 } }, ...panelBody) : h(RN.ScrollView, { keyboardShouldPersistTaps: "handled" }, ...panelBody)))) : null, bulkSelectionRequest ? h(BulkMessageSelector, { key: bulkSelectionRequest.nonce, request: bulkSelectionRequest, onClose: () => { bulkSelectionRequest = null; notifyButton(); } }) : null);
 }
 function patchChatButton() {
     const h = React.createElement;
@@ -1642,7 +1607,7 @@ function Settings() {
                     { label: "Next to the + button", isMarked: settings.anchor !== "send", onPress: () => savePosition("actions") },
                     { label: "Next to the Send button", isMarked: settings.anchor === "send", onPress: () => savePosition("send") },
                 ] });
-        } }), toggle("Remember draft phrases", "Reuse saved phrases per chat.", settings.rememberDrafts !== false, (v) => settings.updateSettings({ rememberDrafts: v })), toggle("Save translation history", "Store translated messages and drafts locally in Translation history.", settings.saveHistory !== false, (v) => settings.updateSettings({ saveHistory: v })), toggle("Hide Gift button", "Hide Rain’s Gift button in the chat composer.", !!settings.hideGiftButton, (v) => { settings.updateSettings({ hideGiftButton: v }); toast("Restart Discord to apply this setting"); })), h(RN.Text, { style: { color: C.sub, fontSize: 12, textAlign: "center", marginTop: 1 } }, "QuickTranslate " + BUILD));
+        } }), toggle("Save translation history", "Store translated messages and drafts locally in Translation history.", settings.saveHistory !== false, (v) => settings.updateSettings({ saveHistory: v })), toggle("Hide Gift button", "Hide Rain’s Gift button in the chat composer.", !!settings.hideGiftButton, (v) => { settings.updateSettings({ hideGiftButton: v }); toast("Restart Discord to apply this setting"); })), h(RN.Text, { style: { color: C.sub, fontSize: 12, textAlign: "center", marginTop: 1 } }, "QuickTranslate " + BUILD));
 }
 /* ------------------------------------------------------------------ */
 /* plugin                                                              */
@@ -1724,6 +1689,10 @@ function migrateSettings() {
     }
     if (stored.settingsVersion < 10) {
         stored.updateSettings({ quickTargets: undefined, settingsVersion: 10 });
+        stored = useQuickTranslate.getState();
+    }
+    if (stored.settingsVersion < 11) {
+        stored.updateSettings({ rememberedDrafts: {}, rememberDrafts: undefined, settingsVersion: 11 });
         stored = useQuickTranslate.getState();
     }
     if (stored.anchor !== "actions" && stored.anchor !== "send")

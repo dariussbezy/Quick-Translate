@@ -2,7 +2,7 @@
   "id": "quicktranslate",
   "name": "Quick Translate",
   "description": "Translate messages with Google Translate or DeepL, including draft translation and bulk selection.",
-  "version": "1.15.2",
+  "version": "1.15.3",
   "authors": [
     "dariussbezy"
   ],
