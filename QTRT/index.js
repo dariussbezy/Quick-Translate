@@ -11,7 +11,7 @@ const { ChannelStore, MessageStore, PrivateChannelSortStore, SelectedChannelStor
 /* ------------------------------------------------------------------ */
 /* constants + settings store                                          */
 /* ------------------------------------------------------------------ */
-const BUILD = "v1.0.0";
+const BUILD = "v1.0.1";
 const FLAG_TOGGLE = 0x04000000;
 const ACCENT = "#8EA1FF";
 const MAX_TRANSLATIONS = 300;
@@ -331,7 +331,7 @@ function callApi(provider, text, tl, sl) {
     if (provider === "deepl") {
         const key = String(qt.deeplApiKey || "").trim();
         if (!key)
-            return Promise.reject(new Error("Add your DeepL API key in QuickTranslate settings"));
+            return Promise.reject(new Error("Add your DeepL API key in Quick Translate settings"));
         const endpoint = key.endsWith(":fx") ? "https://api-free.deepl.com/v2/translate" : "https://api.deepl.com/v2/translate";
         const deeplCode = (code) => code === "zh-CN" || code === "zh-TW" ? "ZH" : code.toUpperCase();
         const target = tl === "en" ? "EN-US" : tl === "pt" ? "PT-BR" : deeplCode(tl);
@@ -483,7 +483,7 @@ function isChatInput(props) {
     }
     if (name && name !== "Unknown" && ph.toLowerCase().includes(String(name).toLowerCase()))
         return true;
-    // Rain's composer is a multiline, send-enabled input, including in DMs where
+    // Discord's composer is a multiline, send-enabled input, including in DMs where
     // the placeholder may be omitted by the current Discord build.
     return !!props.multiline && typeof props.onChangeText === "function" &&
         (typeof props.onSubmitEditing === "function" || props.returnKeyType === "send" || props.maxLength === 2000);
@@ -595,7 +595,7 @@ function translateCurrentText(tl, sl) {
         return Promise.resolve(false);
     }
     if (!(bridge.change || bridge.inst || composerRef())) {
-        toast("Rain could not access the message box; reopen the chat and try again");
+        toast("Discord could not access the message box; reopen the chat and try again");
         return Promise.resolve(false);
     }
     const channelId = currentChannelId();
@@ -1628,7 +1628,7 @@ function Settings() {
         title, subtitle, trailing: h(CustomSwitch, { value, onChange: change }),
     });
     if (!settings._hasHydrated)
-        return h(RN.View, { style: { flex: 1, alignItems: "center", justifyContent: "center", padding: 24 } }, h(RN.Text, { style: { color: C.sub, fontSize: 15 } }, "Loading saved QuickTranslate settings…"));
+        return h(RN.View, { style: { flex: 1, alignItems: "center", justifyContent: "center", padding: 24 } }, h(RN.Text, { style: { color: C.sub, fontSize: 15 } }, "Loading saved Quick Translate settings…"));
     return h(RN.ScrollView, { style: { flex: 1 }, contentContainerStyle: { padding: 16, paddingBottom: 42 } }, h(RN.Text, { style: { color: C.text, fontSize: 25, fontWeight: "800", marginBottom: 5 } }, "Quick Translate"), h(RN.Text, { style: { color: C.sub, fontSize: 14, marginBottom: 23 } }, "Translation preferences for your chats"), h(CustomSection, { title: "Translation service" }, h(CustomRow, { title: "Google Translate", subtitle: "No key required · selected by default", icon: "🌐", last: settings.provider !== "deepl",
         trailing: settings.provider !== "deepl" ? h(RN.Text, { style: { color: C.blurple, fontWeight: "800", fontSize: 18 } }, "✓") : null,
         onPress: () => settings.updateSettings({ provider: "google" }) }), h(CustomRow, { title: "DeepL", subtitle: "Uses your personal API key · Google fallback", icon: "✦", last: settings.provider === "deepl",
