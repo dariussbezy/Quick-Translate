@@ -284,11 +284,21 @@ function CustomSection(props) {
     const C = palette();
     return h(RN.View, { style: { marginBottom: props.compact ? 14 : 22 } }, h(RN.Text, { style: { color: C.sub, fontSize: 13, fontWeight: "700", letterSpacing: 0.4, marginHorizontal: 5, marginBottom: 9, textTransform: "uppercase" } }, props.title), h(RN.View, { style: { backgroundColor: C.card, borderRadius: 17, overflow: "hidden", borderWidth: 1, borderColor: C.card2 } }, props.children));
 }
-function CustomRow(props) {
-    const h = React.createElement;
-    const C = palette();
-    return h(RN.Pressable, { onPress: props.onPress, disabled: !props.onPress, style: ({ pressed }) => ({ minHeight: 58, paddingHorizontal: 15, paddingVertical: 12, flexDirection: "row", alignItems: "center", backgroundColor: pressed ? C.press : "transparent" }) }, props.icon ? h(RN.Text, { style: { width: 30, fontSize: 18, color: C.sub, marginRight: 7 } }, props.icon) : null, h(RN.View, { style: { flex: 1, minWidth: 0, paddingRight: 8 } }, h(RN.Text, { numberOfLines: 1, style: { color: C.text, fontSize: 16, fontWeight: "600" } }, props.title), props.subtitle ? h(RN.Text, { numberOfLines: 2, style: { color: C.sub, fontSize: 13, marginTop: 3, lineHeight: 18 } }, props.subtitle) : null), props.trailing || null, !props.last ? h(RN.View, { style: { position: "absolute", bottom: 0, left: props.icon ? 52 : 15, right: 0, height: 1, backgroundColor: C.card2 } }) : null);
+function settingIconForTitle(title) {
+    const text = String(title || "").toLowerCase();
+    const rules = [
+        [/translate|translation|google|deepl/, "↔"], [/language/, "文"], [/color|appearance/, "◉"],
+        [/clock|time|history|retention/, "◷"], [/cache|storage|persist|remember|restart/, "▣"],
+        [/deleted|delete/, "⌫"], [/edit/, "✎"], [/ignore/, "⊘"], [/mention|everyone|ping/, "@"],
+        [/reply/, "↩"], [/filter|search/, "⌕"], [/capture|message|channel|dm/, "▤"],
+        [/alert|notify|toast/, "!"], [/button|position|composer/, "+"], [/word|term/, "Aa"],
+        [/jump/, "↗"], [/test/, "▷"], [/server|guild/, "◇"], [/bot/, "◆"],
+        [/quick|favorite|saved/, "★"], [/clear|remove/, "×"], [/enabled|logger/, "●"]
+    ];
+    const match = rules.find(([pattern]) => pattern.test(text));
+    return match ? match[1] : "•";
 }
+function CustomRow(props){const C=palette(),h=React.createElement,icon=props.icon||settingIconForTitle(props.title);return h(RN.Pressable,{accessibilityRole:props.onPress?"button":undefined,onPress:props.onPress,disabled:!props.onPress,style:({pressed})=>({minHeight:58,paddingHorizontal:15,paddingVertical:12,flexDirection:"row",alignItems:"center",backgroundColor:pressed?C.press:"transparent"})},icon?h(RN.Text,{style:{width:30,fontSize:18,color:C.sub,marginRight:7,textAlign:"center"}},icon):null,h(RN.View,{style:{flex:1,minWidth:0,paddingRight:8}},h(RN.Text,{numberOfLines:1,style:{color:C.text,fontSize:16,fontWeight:"600"}},props.title),props.subtitle?h(RN.Text,{numberOfLines:2,style:{color:C.sub,fontSize:13,marginTop:3,lineHeight:18}},props.subtitle):null),props.trailing||null,!props.last?h(RN.View,{style:{position:"absolute",bottom:0,left:icon?52:15,right:0,height:1,backgroundColor:C.card2}}):null);}
 function CustomSwitch(props) {
     const h = React.createElement;
     const C = palette();
