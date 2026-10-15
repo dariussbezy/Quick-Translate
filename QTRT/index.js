@@ -1,290 +1,671 @@
-"use strict";
-Object.defineProperty(exports, "__esModule", { value: true });
-const { findAssetId } = rain.api.assets;
-const { after, before, instead } = rain.api.patcher;
-const { createPluginStore } = rain.api.storage;
-const { showToast } = rain.api.ui.toasts;
-const { findInReactTree } = rain.utils;
-const { findByName, findByProps, findByStoreName, findByTypeDisplayName } = rain.metro;
-const { clipboard, FluxDispatcher, NavigationNative, React, ReactNative: RN } = rain.metro.common;
-const { ChannelStore, MessageStore, PrivateChannelSortStore, SelectedChannelStore, UserStore } = rain.metro.common.stores;
-/* ------------------------------------------------------------------ */
-/* constants + settings store                                          */
-/* ------------------------------------------------------------------ */
-const BUILD = "v1.0.1";
-const FLAG_TOGGLE = 0x04000000;
-const ACCENT = "#8EA1FF";
-const MAX_TRANSLATIONS = 300;
-const MAX_CACHE = 200;
-const MAX_HISTORY = 100;
-const MAX_FAVS = 6;
-const TIMEOUT = 12000;
-const REQUEST_GAP = 450;
-const PROTECT = /```[\s\S]*?```|`[^`\n]+`|<a?:\w+:\d+>|<[@#][!&]?\d+>|<t:-?\d+(?::[A-Za-z])?>|https?:\/\/[^\s<>]+/g;
-const INLINE = new Set(["text", "strong", "em", "u", "s", "inlineCode", "customEmoji"]);
-const HEX = /^#[0-9A-Fa-f]{6}$/;
-const LANGS = [
-    ["en", "English"], ["ro", "Romanian"], ["es", "Spanish"], ["fr", "French"], ["de", "German"], ["it", "Italian"],
-    ["pt", "Portuguese"], ["ru", "Russian"], ["uk", "Ukrainian"], ["pl", "Polish"], ["nl", "Dutch"], ["tr", "Turkish"],
-    ["ar", "Arabic"], ["he", "Hebrew"], ["hi", "Hindi"], ["ja", "Japanese"], ["ko", "Korean"],
-    ["zh-CN", "Chinese (Simplified)"], ["zh-TW", "Chinese (Traditional)"], ["id", "Indonesian"], ["th", "Thai"],
-    ["vi", "Vietnamese"], ["sv", "Swedish"], ["da", "Danish"], ["no", "Norwegian"], ["fi", "Finnish"], ["cs", "Czech"],
-    ["sk", "Slovak"], ["hu", "Hungarian"], ["el", "Greek"], ["bg", "Bulgarian"], ["sr", "Serbian"], ["hr", "Croatian"],
-    ["sl", "Slovenian"], ["lt", "Lithuanian"], ["lv", "Latvian"], ["et", "Estonian"], ["fa", "Persian"], ["bn", "Bengali"],
-    ["ur", "Urdu"], ["ms", "Malay"], ["ta", "Tamil"], ["te", "Telugu"], ["sw", "Swahili"], ["af", "Afrikaans"],
-    ["ca", "Catalan"], ["tl", "Filipino"], ["is", "Icelandic"], ["ga", "Irish"], ["cy", "Welsh"], ["sq", "Albanian"],
-    ["mk", "Macedonian"], ["ka", "Georgian"], ["hy", "Armenian"], ["az", "Azerbaijani"], ["kk", "Kazakh"],
-    ["uz", "Uzbek"], ["mn", "Mongolian"], ["ne", "Nepali"], ["si", "Sinhala"], ["my", "Myanmar"], ["km", "Khmer"],
-    ["lo", "Lao"], ["la", "Latin"], ["eo", "Esperanto"],
-];
-const LANG_NAME = new Map(LANGS);
-const COLOR_PRESETS = [
-    ["Default", ACCENT], ["Red", "#ED4245"], ["Orange", "#F07B3E"], ["Gold", "#F1C40F"], ["Green", "#43B581"],
-    ["Teal", "#1ABC9C"], ["Blue", "#3498DB"], ["Indigo", "#5865F2"], ["Purple", "#9B59B6"], ["Pink", "#EB459E"], ["Gray", "#80848E"],
-];
-const { useStore: useQuickTranslate, settings: qt } = createPluginStore("quicktranslate", {
-    settingsVersion: 0,
-    targetOut: "en",
-    targetIn: "en",
-    sourceOut: "auto",
-    immersive: true,
-    translationColor: ACCENT,
-    showButton: true,
-    draftBeforeSend: true,
-    saveHistory: true,
-    rememberLanguagesPerChat: true,
-    chatLanguages: {},
-    highlightDraftButton: true,
-    keepArmed: true,
-    hideGiftButton: true,
-    provider: "google",
-    deeplApiKey: "",
-    anchor: "actions",
-    favLangs: ["en", "es", "fr", "de", "ro", "ru"],
-    showSourceLanguage: false,
-    autoChannelIds: [],
-    autoIncomingImmersive: true,
-    protectedWords: [],
-    historyEntries: [],
-    cacheEntries: [],
-    keepMessageTranslations: true,
-    messageTranslations: [],
-});
-const translations = new Map();
-const cache = new Map();
-const inFlight = new Map();
-let cacheGeneration = 0;
-const autoSeen = new Set();
-const unpatches = [];
-const bridge = { text: "", change: null, inst: null, seen: 0 };
-const refWrappers = new WeakMap();
-const buttonListeners = new Set();
-let armed = null;
-let lastChannelId = null;
-let lastOriginal = null;
-let lastOriginalChannelId = null;
-let lastTranslatedText = null;
-let renderErrors = 0;
-let renderUnpatch = null;
-let ThemeStore;
-let persistentReady = false;
-let historyEntries = [];
-let requestTail = Promise.resolve();
-let lastRequestAt = 0;
-let bulkSelectionRequest = null;
-let bulkSelectionNonce = 0;
-const toast = (t) => { try {
-    showToast(t);
-}
-catch (_) { /* ignore */ } };
-const safe = (fn, fallback) => { try {
-    return fn();
-}
-catch (_) {
-    return fallback;
-} };
-const trimMap = (m, max) => { while (m.size > max)
-    m.delete(m.keys().next().value); };
-const langName = (code) => (code === "auto" ? "Auto-detect" : LANG_NAME.get(code) || code);
-const notifyButton = () => buttonListeners.forEach(f => { try {
-    f();
-}
-catch (_) { /* ignore */ } });
-const getMessage = (c, id) => safe(() => MessageStore.getMessage(c, id) || null, null);
-const getChannel = (id) => safe(() => (id ? ChannelStore.getChannel(id) : null), null);
-const isDM = (ch) => !!ch && (ch.type === 1 || ch.type === 3);
-const nameOf = (u) => (u ? u.globalName || u.global_name || u.username || "Unknown" : "Unknown");
-function getChannelDisplayName(channelId) {
-    const channel = getChannel(channelId);
-    if (!channel)
-        return channelId ? "Unavailable channel" : "Draft (not sent)";
-    if (isDM(channel)) {
-        const recipients = Array.isArray(channel.recipients) ? channel.recipients : [];
-        const names = recipients.map((id) => nameOf(safe(() => UserStore.getUser(String(id)), null)));
-        return channel.name || names.join(", ") || "Direct message";
-    }
-    return channel.name ? "# " + channel.name : "Channel";
-}
-function currentChannelId() {
-    return safe(() => SelectedChannelStore.getChannelId?.() ?? SelectedChannelStore.getCurrentlySelectedChannelId?.() ?? null, null);
-}
-function getChatLanguages(channelId = currentChannelId()) {
-    const stored = channelId && qt.rememberLanguagesPerChat !== false ? qt.chatLanguages?.[channelId] : null;
-    return { sourceOut: stored?.sourceOut || qt.sourceOut || "auto", targetOut: stored?.targetOut || qt.targetOut || "en" };
-}
-function saveChatLanguages(channelId, patch) {
-    if (!channelId || qt.rememberLanguagesPerChat === false) {
-        const globalPatch = {};
-        if (patch.sourceOut)
-            globalPatch.sourceOut = patch.sourceOut;
-        if (patch.targetOut)
-            globalPatch.targetOut = patch.targetOut;
-        useQuickTranslate.getState().updateSettings(globalPatch);
-        return;
-    }
-    const chatLanguages = Object.assign({}, useQuickTranslate.getState().chatLanguages || {});
-    chatLanguages[channelId] = Object.assign({}, chatLanguages[channelId] || getChatLanguages(channelId), patch);
-    useQuickTranslate.getState().updateSettings({ chatLanguages });
-}
-function persistLocalData() {
-    if (!persistentReady)
-        return;
+const rainRuntime = globalThis.rain;
+if (!rainRuntime || !rainRuntime.api || !rainRuntime.api.storage) throw new Error("Discord plugin API unavailable");
+const rainStore = rainRuntime.api.storage.createPluginStore("gpl", {});
+const pluginStorage = rainStore.settings;
+const implementation = (() => {
+  "use strict";
+  const { metro } = rainRuntime;
+  const patcher = rainRuntime.api.patcher;
+  const ui = rainRuntime.api.ui;
+  const { findByName, findByProps, findByStoreName } = metro;
+  const { FluxDispatcher, React, ReactNative: RN } = metro.common;
+
+  const MAX_PINGS = 200;
+  const DEFAULT_RECENT_MESSAGES = 5000;
+  const MIN_RECENT_MESSAGES = 100;
+  const MAX_RECENT_MESSAGES = 20000;
+  const MAX_RECENT_CACHE_BYTES = 8 * 1024 * 1024;
+  const RECENT_ARCHIVE_SAVE_DELAY = 30000;
+  const MAX_SNIPPET = 300;
+  const BUILD = "v1.0.2";
+  const GPL_ALERT_BRIDGE_KEY = "__ghost_ping_logger_aml_bridge_v1__";
+  const PAGE = 40;
+  const DAY = 86400000;
+  const RED = "#ED4245";
+  const INLINE = new Set(["text", "strong", "em", "u", "s", "inlineCode"]);
+  const KINDS = { dm: "DM", reply: "Reply", mention: "Mention" };
+
+  const unpatches = [];
+  const AML_BRIDGE_KEY = "__advanced_message_logger_gpl_bridge_v1__";
+  let pings = [];
+  const recentMessages = new Map();
+  const recentMessageSizes = new Map();
+  const recentArchiveIds = new Set();
+  let recentMessageBytes = 0;
+  let receivedThisSession = 0;
+  let receivedDMsThisSession = 0;
+  const receivedChannelsThisSession = new Set();
+  let recentArchiveDirty = false;
+  let recentArchiveTimer = null;
+  const retainedPings = new Map();
+  let MessageStore;
+  let UserStore;
+  let ChannelStore;
+  let SelectedChannelStore;
+  let ThemeStore;
+  let appStateSub = null;
+  let renderUnpatch = null;
+  let lastSettingsNavigation = null;
+  const alertedPings = new Set();
+
+  const cfg = () => pluginStorage;
+  const toast = (t) => { try { ui.toasts.showToast(t); } catch (_) {} };
+  const clip = (s, n) => String(s == null ? "" : s).slice(0, n);
+
+  function amlOwnsRetention(message, channelId, guildId) {
     try {
-        useQuickTranslate.getState().updateSettings({
-            historyEntries: historyEntries.slice(0, MAX_HISTORY),
-            cacheEntries: Array.from(cache.entries()).slice(-MAX_CACHE),
-        });
-    }
-    catch (_) { /* settings may still be hydrating */ }
-}
-function clearTranslationData() {
-    const state = useQuickTranslate.getState();
-    const historyCount = historyEntries.length;
-    const cacheCount = Math.max(cache.size, Array.isArray(state.cacheEntries) ? state.cacheEntries.length : 0);
-    cacheGeneration++;
-    cache.clear();
-    inFlight.clear();
-    historyEntries = [];
-    state.updateSettings({ historyEntries: [], cacheEntries: [], messageTranslations: [] });
-    persistLocalData();
-    toast(`Translation history, saved message translations and cache cleared (${historyCount} history, ${cacheCount} cached)`);
-}
-function hydrateLocalData() {
-    const generationAtStart = cacheGeneration;
-    const load = () => {
-        const state = useQuickTranslate.getState();
-        historyEntries = Array.isArray(state.historyEntries) ? state.historyEntries.filter((x) => x && typeof x.original === "string" && typeof x.translated === "string").slice(0, MAX_HISTORY) : [];
-        cache.clear();
-        if (generationAtStart === cacheGeneration && Array.isArray(state.cacheEntries)) {
-            for (const entry of state.cacheEntries.slice(-MAX_CACHE)) {
-                if (Array.isArray(entry) && typeof entry[0] === "string" && entry[1] && typeof entry[1].text === "string")
-                    cache.set(entry[0], entry[1]);
-            }
-        }
-        persistentReady = true;
-        restoreMessageTranslations();
-        persistLocalData();
+      const bridge = globalThis[AML_BRIDGE_KEY];
+      return !!(bridge && bridge.active && typeof bridge.shouldRetainDelete === "function" && bridge.shouldRetainDelete(message, channelId, guildId));
+    } catch (_) { return false; }
+  }
+  function amlOwnsDeletedMessage(id) {
+    try {
+      const bridge = globalThis[AML_BRIDGE_KEY];
+      return !!(bridge && bridge.active && typeof bridge.ownsDeletedMessage === "function" && bridge.ownsDeletedMessage(id));
+    } catch (_) { return false; }
+  }
+  function fmtTime(ms) {
+    const d = new Date(ms);
+    const p = (n) => (n < 10 ? "0" : "") + n;
+    const t = p(d.getHours()) + ":" + p(d.getMinutes());
+    if (d.toDateString() === new Date().toDateString()) return t;
+    return p(d.getDate()) + "/" + p(d.getMonth() + 1) + " " + t;
+  }
+
+  function nameOf(u) {
+    if (!u) return "Unknown";
+    return u.globalName || u.global_name || u.username || "Unknown";
+  }
+
+  function loadStores() {
+    MessageStore = MessageStore || findByStoreName("MessageStore");
+    UserStore = UserStore || findByStoreName("UserStore");
+    ChannelStore = ChannelStore || findByStoreName("ChannelStore");
+    return !!(MessageStore && UserStore && FluxDispatcher);
+  }
+
+  const getMessage = (c, id) => { try { return MessageStore.getMessage(c, id) || null; } catch (_) { return null; } };
+  function rememberMessage(message, persistArchive) {
+    if (cfg().captureMode !== "expanded" || !message || !message.id) return;
+    const channelId = message.channel_id || message.channelId;
+    if (!channelId) return;
+    const previous = recentMessages.get(message.id);
+    if (!previous && !(message.author && typeof message.author === "object")) return;
+    const merged = previous ? { ...previous, ...message } : message;
+    const reference = merged.messageReference || merged.message_reference || merged.reference;
+    const embedded = merged.referencedMessage && (merged.referencedMessage.message || merged.referencedMessage) || merged.referenced_message;
+    const snapshot = {
+      id: String(merged.id),
+      channel_id: String(channelId),
+      guild_id: merged.guild_id || merged.guildId || null,
+      content: clip(merged.content, MAX_SNIPPET),
+      author: merged.author ? {
+        id: merged.author.id,
+        username: merged.author.username,
+        globalName: merged.author.globalName,
+        global_name: merged.author.global_name,
+        bot: !!merged.author.bot,
+      } : previous && previous.author,
+      mentions: Array.isArray(merged.mentions) ? merged.mentions.map((user) => typeof user === "string" ? user : user && user.id).filter(Boolean) : previous && previous.mentions || [],
+      mentionEveryone: !!(merged.mention_everyone === true || merged.mentionEveryone === true || previous && previous.mentionEveryone),
+
+      mentioned: typeof merged.mentioned === "boolean" ? merged.mentioned : previous && previous.mentioned,
+      messageReference: reference ? {
+        message_id: reference.message_id || reference.messageId,
+        channel_id: reference.channel_id || reference.channelId || String(channelId),
+      } : previous && previous.messageReference,
+      referencedMessage: embedded && embedded.author ? { message: { author: { id: embedded.author.id } } } : previous && previous.referencedMessage,
     };
-    const state = useQuickTranslate.getState();
-    if (state._hasHydrated) {
-        load();
-        return;
+    const size = 512 + snapshot.content.length * 2 + (snapshot.mentions || []).length * 32 +
+      String(snapshot.author && snapshot.author.username || "").length * 2 +
+      String(snapshot.author && (snapshot.author.globalName || snapshot.author.global_name) || "").length * 2;
+    if (size > MAX_RECENT_CACHE_BYTES) return;
+    if (recentMessages.has(snapshot.id)) {
+      recentMessageBytes = Math.max(0, recentMessageBytes - (recentMessageSizes.get(snapshot.id) || 0));
+      recentMessages.delete(snapshot.id);
     }
-    const unsubscribe = useQuickTranslate.subscribe((next) => {
-        if (!next._hasHydrated)
-            return;
-        unsubscribe();
-        load();
-    });
-    unpatches.push(unsubscribe);
-}
-function restoreMessageTranslations() {
-    const state = useQuickTranslate.getState();
-    if (state.keepMessageTranslations === false || !Array.isArray(state.messageTranslations))
-        return;
-    const restoredIds = new Set();
-    for (const entry of state.messageTranslations.slice(0, MAX_TRANSLATIONS)) {
-        if (!entry || typeof entry.messageId !== "string" || typeof entry.channelId !== "string" || typeof entry.translated !== "string")
-            continue;
-        const entryId = entry.channelId + "|" + entry.messageId;
-        if (restoredIds.has(entryId))
-            continue;
-        restoredIds.add(entryId);
-        translations.set(entry.messageId, {
-            text: entry.translated, src: entry.source || "auto", tl: entry.target || "en",
-            at: Number(entry.at) || Date.now(), ch: entry.channelId,
-            immersive: entry.immersive, autoIncoming: !!entry.autoIncoming,
-        });
+    recentMessages.set(snapshot.id, snapshot);
+    recentMessageSizes.set(snapshot.id, size);
+    recentMessageBytes += size;
+    trimRecentMessages();
+    if (persistArchive !== false && cfg().rememberReceivedMessages !== false) {
+      recentArchiveIds.add(snapshot.id);
+      scheduleRecentArchiveSave();
     }
-    trimMap(translations, MAX_TRANSLATIONS);
-    for (const entry of state.messageTranslations.slice(0, MAX_TRANSLATIONS)) {
-        if (entry && entry.channelId && entry.messageId && getMessage(entry.channelId, entry.messageId))
-            refreshRow(entry.channelId, entry.messageId);
+  }
+
+  function flushRecentArchive() {
+    if (recentArchiveTimer) { clearTimeout(recentArchiveTimer); recentArchiveTimer = null; }
+    if (!recentArchiveDirty) return;
+    recentArchiveDirty = false;
+    try {
+      cfg().receivedMessages = cfg().rememberReceivedMessages === false ? [] : Array.from(recentArchiveIds).map((id) => recentMessages.get(id)).filter(Boolean);
+    } catch (_) {
+      recentArchiveDirty = true;
+      if (cfg().rememberReceivedMessages !== false && !recentArchiveTimer) recentArchiveTimer = setTimeout(flushRecentArchive, 60000);
     }
-}
-function saveMessageTranslation(message, result, target, channelId, autoIncoming, immersiveOverride) {
-    const state = useQuickTranslate.getState();
-    if (state.keepMessageTranslations === false || !message?.id || !channelId || !result?.text)
+  }
+
+  function scheduleRecentArchiveSave() {
+    if (cfg().rememberReceivedMessages === false) return;
+    recentArchiveDirty = true;
+    if (!recentArchiveTimer) recentArchiveTimer = setTimeout(flushRecentArchive, RECENT_ARCHIVE_SAVE_DELAY);
+  }
+
+  function restoreRecentArchive() {
+    if (cfg().rememberReceivedMessages === false) return;
+    const saved = Array.isArray(cfg().receivedMessages) ? cfg().receivedMessages : [];
+    for (const message of saved) rememberMessage(message);
+    recentArchiveDirty = false;
+    if (recentArchiveTimer) { clearTimeout(recentArchiveTimer); recentArchiveTimer = null; }
+  }
+  function trimRecentMessages() {
+    while (recentMessages.size > recentMessageLimit() || recentMessageBytes > MAX_RECENT_CACHE_BYTES) {
+      const oldest = recentMessages.keys().next().value;
+      if (oldest === undefined) break;
+      recentMessages.delete(oldest);
+      recentArchiveIds.delete(oldest);
+      recentMessageBytes = Math.max(0, recentMessageBytes - (recentMessageSizes.get(oldest) || 0));
+      recentMessageSizes.delete(oldest);
+    }
+  }
+  function clearRecentMessages() {
+    recentMessages.clear();
+    recentMessageSizes.clear();
+    recentArchiveIds.clear();
+    recentMessageBytes = 0;
+  }
+  function recentMessageLimit() {
+    const value = Number(cfg().maxCachedMessages);
+    if (!Number.isFinite(value)) return DEFAULT_RECENT_MESSAGES;
+    return Math.max(MIN_RECENT_MESSAGES, Math.min(MAX_RECENT_MESSAGES, Math.round(value)));
+  }
+  function getKnownMessage(channelId, id) {
+    const cached = getMessage(channelId, id);
+    if (cached) return cached;
+    if (cfg().captureMode === "expanded") {
+      const recent = recentMessages.get(String(id));
+      if (recent && String(recent.channel_id) === String(channelId)) return recent;
+    }
+    // AML may have received this message through a client event path that did
+    // not populate GPL's own cache. Use that cache only as an optional fallback;
+    // GPL's local MessageStore/recentMessages remain sufficient when AML is off.
+    try {
+      const bridge = globalThis[AML_BRIDGE_KEY];
+      if (bridge && bridge.active && typeof bridge.getKnownMessage === "function") {
+        const shared = bridge.getKnownMessage(channelId, id);
+        if (shared && (!shared.channel_id || String(shared.channel_id) === String(channelId))) return shared;
+      }
+    } catch (_) {}
+    return null;
+  }
+  const getChannel = (id) => { try { return id ? ChannelStore.getChannel(id) : null; } catch (_) { return null; } };
+  const guildOf = (c) => { const ch = getChannel(c); return ch && ch.guild_id ? ch.guild_id : null; };
+  const isDM = (ch) => !!ch && (ch.type === 1 || ch.type === 3);
+  const myId = () => { try { return UserStore.getCurrentUser()?.id || null; } catch (_) { return null; } };
+
+  function currentChannelId() {
+    try {
+      SelectedChannelStore = SelectedChannelStore || findByStoreName("SelectedChannelStore");
+      return SelectedChannelStore.getChannelId();
+    } catch (_) { return null; }
+  }
+
+  function channelLabel(channelId, guildId) {
+    const ch = getChannel(channelId);
+    if (!ch) return "Unknown channel";
+    if (isDM(ch)) {
+      let name = ch.name;
+      if (!name) {
+        try { name = (ch.recipients || []).map((id) => UserStore.getUser(id)?.username).filter(Boolean).join(", "); } catch (_) {}
+      }
+      return "DM · " + (name || "Unknown");
+    }
+    let guild = null;
+    try { guild = findByStoreName("GuildStore").getGuild(guildId || ch.guild_id)?.name; } catch (_) {}
+    return "#" + (ch.name || "channel") + (guild ? " · " + guild : "");
+  }
+
+  function save() {
+    try { cfg().pings = pings.slice(); } catch (_) {}
+  }
+
+  function closePingAlert() {
+    try {
+      const alerts = findByProps("openLazy", "close");
+      if (alerts && typeof alerts.close === "function") alerts.close();
+    } catch (_) {}
+  }
+
+  function closeSettingsAlert() {
+    try {
+      const alerts = findByProps("openLazy", "close");
+      if (alerts && typeof alerts.close === "function") alerts.close();
+    } catch (_) {}
+  }
+
+  function MessageCacheLimitModal(props) {
+    const [value, setValue] = React.useState(String(props.initialValue || DEFAULT_RECENT_MESSAGES));
+    const [error, setError] = React.useState("");
+    const colors = palette();
+    const action = (label, onPress, primary) => React.createElement(RN.Pressable, {
+      key: label,
+      onPress,
+      accessibilityRole: "button",
+      style: { minHeight: 46, paddingHorizontal: 18, borderRadius: 14, marginLeft: primary ? 10 : 0, alignItems: "center", justifyContent: "center", backgroundColor: primary ? colors.acc : "rgba(128,128,128,0.22)" },
+    }, React.createElement(RN.Text, { style: { color: "#FFFFFF", fontSize: 15, fontWeight: "600" } }, label));
+    const save = () => {
+      const count = Number(String(value).trim());
+      if (!Number.isInteger(count) || count < MIN_RECENT_MESSAGES || count > MAX_RECENT_MESSAGES) {
+        setError("Enter a whole number from " + MIN_RECENT_MESSAGES + " to " + MAX_RECENT_MESSAGES + ".");
         return;
-    const messageId = String(message.id);
-    const channel = String(channelId);
-    const id = channel + "|" + messageId;
-    const entries = Array.isArray(state.messageTranslations) ? state.messageTranslations : [];
-    const next = [{
-        id, messageId, channelId: channel, original: String(message.content || ""),
-        translated: result.text, source: result.src || "auto", target, at: Date.now(),
-        autoIncoming: !!autoIncoming, immersive: immersiveOverride,
-    }, ...entries.filter(entry => entry?.id !== id)].slice(0, MAX_TRANSLATIONS);
-    state.updateSettings({ messageTranslations: next });
-}
-function addHistory(original, translated, result, target, channelId = currentChannelId(), messageId = null) {
-    if (!persistentReady || qt.saveHistory === false || !translated || result.same)
-        return;
-    const provider = result.provider || qt.provider || "google";
-    const id = [channelId || "draft", messageId || "", provider, result.src || "auto", target, original].join("|");
-    historyEntries = historyEntries.filter(item => item.id !== id);
-    historyEntries.unshift({
-        id, original, translated, source: result.src || "auto", target,
-        provider, at: Date.now(), channelId, channelName: getChannelDisplayName(channelId), messageId,
-    });
-    historyEntries = historyEntries.slice(0, MAX_HISTORY);
-    persistLocalData();
-}
-function enqueueRequest(work) {
-    const task = requestTail.catch(() => undefined).then(async () => {
-        const wait = Math.max(0, REQUEST_GAP - (Date.now() - lastRequestAt));
-        if (wait)
-            await new Promise(resolve => setTimeout(resolve, wait));
-        lastRequestAt = Date.now();
-        return work();
-    });
-    requestTail = task.then(() => undefined, () => undefined);
-    return task;
-}
-function palette() {
-    const light = safe(() => {
-        ThemeStore = ThemeStore || findByStoreName("ThemeStore");
-        return !!ThemeStore && ThemeStore.theme === "light";
-    }, false);
-    return light
-        ? { text: "#060607", sub: "#5C5E66", bg: "#FFFFFF", card: "#F2F3F5", blurple: "#5865F2", card2: "rgba(0,0,0,0.045)", chip: "rgba(0,0,0,0.07)", press: "rgba(0,0,0,0.06)", off: "#B5BAC1" }
-        : { text: "#FFFFFF", sub: "#B5BAC1", bg: "#1E1F22", card: "#2B2D31", blurple: "#5865F2", card2: "rgba(255,255,255,0.06)", chip: "rgba(255,255,255,0.10)", press: "rgba(255,255,255,0.07)", off: "#4E5058" };
-}
-const translationColor = () => (HEX.test(String(qt.translationColor || "")) ? String(qt.translationColor).toUpperCase() : ACCENT);
-const LANGUAGE_FLAGS = {
-    en: "🇺🇸", ro: "🇷🇴", es: "🇪🇸", fr: "🇫🇷", de: "🇩🇪", it: "🇮🇹", pt: "🇧🇷", ru: "🇷🇺", uk: "🇺🇦", pl: "🇵🇱",
-    nl: "🇳🇱", tr: "🇹🇷", ar: "🇸🇦", he: "🇮🇱", hi: "🇮🇳", ja: "🇯🇵", ko: "🇰🇷", "zh-CN": "🇨🇳", "zh-TW": "🇹🇼",
-    id: "🇮🇩", th: "🇹🇭", vi: "🇻🇳", sv: "🇸🇪", da: "🇩🇰", no: "🇳🇴", fi: "🇫🇮", cs: "🇨🇿", sk: "🇸🇰", hu: "🇭🇺",
-    el: "🇬🇷", bg: "🇧🇬", sr: "🇷🇸", hr: "🇭🇷", sl: "🇸🇮", lt: "🇱🇹", lv: "🇱🇻", et: "🇪🇪", fa: "🇮🇷", bn: "🇧🇩",
-    ur: "🇵🇰", ms: "🇲🇾", sw: "🇰🇪", af: "🇿🇦", tl: "🇵🇭", is: "🇮🇸", ga: "🇮🇪",
-};
-const languageLabel = (code, name = langName(code)) => (LANGUAGE_FLAGS[code] ? LANGUAGE_FLAGS[code] + "  " : "") + name;
-function CustomSection(props) {
+      }
+      closeSettingsAlert();
+      if (typeof props.onSave === "function") props.onSave(count);
+    };
+    return React.createElement(RN.View, { style: { width: "92%", maxWidth: 440, alignSelf: "center", padding: 18, borderRadius: 22, backgroundColor: colors.text === "#FFFFFF" ? "#2B2D31" : "#FFFFFF" } },
+      React.createElement(RN.Text, { style: { color: colors.text, fontSize: 20, fontWeight: "700", marginBottom: 8 } }, "Maximum cached messages"),
+      React.createElement(RN.Text, { style: { color: colors.sub, fontSize: 14, marginBottom: 16 } }, "Keeps messages Discord delivers while running. The cache uses an estimated 8 MiB budget and does not download history."),
+      React.createElement(RN.TextInput, { value, onChangeText: (next) => { setValue(next); setError(""); }, keyboardType: "number-pad", accessibilityLabel: "Maximum cached messages", style: { minHeight: 48, paddingHorizontal: 14, borderRadius: 14, color: colors.text, fontSize: 17, backgroundColor: "rgba(128,128,128,0.16)" } }),
+      error ? React.createElement(RN.Text, { style: { color: RED, fontSize: 13, marginTop: 8 } }, error) : null,
+      React.createElement(RN.View, { style: { flexDirection: "row", justifyContent: "flex-end", marginTop: 18 } },
+        action("Cancel", closeSettingsAlert, false), action("Save", save, true)));
+  }
+
+  function GhostPingAlert(props) {
+    const entry = props.entry;
+    const isTest = String(entry.id).startsWith("test-");
+    const close = () => closePingAlert();
+    const jump = () => {
+      closePingAlert();
+      if (!isTest) setTimeout(() => jumpTo(entry.c, entry.g, entry.id, lastSettingsNavigation), 180);
+    };
+    const what = entry.k === "dm" ? "deleted a message in your DM" : entry.k === "reply" ? "deleted a reply to you" : "deleted a message with a mention";
+    const colors = palette();
     const h = React.createElement;
-    const C = palette();
-    return h(RN.View, { style: { marginBottom: props.compact ? 14 : 22 } }, h(RN.Text, { style: { color: C.sub, fontSize: 13, fontWeight: "700", letterSpacing: 0.4, marginHorizontal: 5, marginBottom: 9, textTransform: "uppercase" } }, props.title), h(RN.View, { style: { backgroundColor: C.card, borderRadius: 17, overflow: "hidden", borderWidth: 1, borderColor: C.card2 } }, props.children));
+    const dark = colors.text === "#FFFFFF";
+    const btn = (label, onPress, primary) => h(RN.Pressable, {
+      key: label, onPress, accessibilityRole: "button",
+      style: ({ pressed }) => ({ flex: 1, minHeight: 48, borderRadius: 14, alignItems: "center", justifyContent: "center", marginLeft: primary ? 10 : 0, backgroundColor: primary ? (pressed ? colors.accPressed : colors.acc) : (pressed ? "rgba(128,128,128,0.32)" : "rgba(128,128,128,0.22)") }),
+    }, h(RN.Text, { style: { color: primary ? "#FFFFFF" : colors.text, fontSize: 15, fontWeight: "700" } }, label));
+    return h(RN.View, { style: { width: "100%", maxWidth: 440, alignSelf: "center", padding: 22, borderRadius: 22, backgroundColor: dark ? "#2B2D31" : "#FFFFFF" } },
+      h(RN.View, { style: { flexDirection: "row", alignItems: "center" } },
+        h(RN.View, { style: { width: 48, height: 48, borderRadius: 24, alignItems: "center", justifyContent: "center", backgroundColor: "rgba(237,66,69,0.16)" } },
+          h(RN.Text, { style: { fontSize: 24 } }, "\uD83D\uDC7B")),
+        h(RN.View, { style: { flex: 1, marginLeft: 14 } },
+          h(RN.Text, { style: { color: RED, fontSize: 12, fontWeight: "700", letterSpacing: 0.8 } }, "GHOST PING"),
+          h(RN.Text, { style: { color: colors.text, fontSize: 18, fontWeight: "700", marginTop: 2 }, numberOfLines: 1 }, String(entry.an || "Unknown")))),
+      h(RN.Text, { style: { color: colors.sub, fontSize: 14, marginTop: 14 } }, what),
+      h(RN.View, { style: { marginTop: 10, padding: 14, borderRadius: 14, borderLeftWidth: 4, borderLeftColor: RED, backgroundColor: "rgba(237,66,69,0.10)" } },
+        h(RN.Text, { style: { color: colors.text, fontSize: 15, lineHeight: 21 } }, entry.t || "(no message text)")),
+      h(RN.View, { style: { flexDirection: "row", marginTop: 20 } },
+        !isTest ? btn("Dismiss", close, false) : null,
+        btn(isTest ? "Close" : "Jump to message", isTest ? close : jump, true)));
+  }
+
+  function showPingAlert(entry) {
+    const what = entry.k === "dm" ? "deleted a message in your DM" : entry.k === "reply" ? "deleted a reply to you" : "deleted a message with a mention";
+    const isTest = String(entry.id).startsWith("test-");
+    const buttons = [];
+    if (!isTest) buttons.push({ text: "Dismiss", style: "cancel" });
+    buttons.push({ text: isTest ? "Close" : "Jump to message", onPress: () => {
+      if (!isTest) setTimeout(() => jumpTo(entry.c, entry.g, entry.id, lastSettingsNavigation), 180);
+    } });
+    const message = String(entry.an || "Unknown") + " " + what + ":\n\n" + (entry.t || "(no message text)");
+    try {
+      showDiscordAlert("gpl-ghost-ping", "Ghost ping", message, buttons);
+    } catch (_) {
+      toast("Ghost ping: " + entry.an + " " + what);
+    }
+  }
+
+  function purge() {
+    const days = cfg().retentionDays;
+    if (!days) return false;
+    const cutoff = Date.now() - days * DAY;
+    const kept = pings.filter((p) => p.at >= cutoff);
+    if (kept.length === pings.length) return false;
+    pings = kept;
+    return true;
+  }
+
+  function isReplyToMe(msg, channelId, me) {
+    const ref = msg.messageReference;
+    if (!ref) return false;
+    const refId = ref.message_id || ref.messageId;
+    const refChannel = ref.channel_id || ref.channelId || channelId;
+    const target = refId ? getKnownMessage(refChannel, refId) : null;
+    if (target && target.author && target.author.id === me) return true;
+    const embedded = msg.referencedMessage && msg.referencedMessage.message;
+    const alt = embedded || msg.referenced_message;
+    return !!(alt && alt.author && alt.author.id === me);
+  }
+
+  function mentionsMe(msg, me) {
+    if (msg.mentioned === true) return true;
+    try {
+      for (const m of msg.mentions || []) {
+        if ((typeof m === "string" ? m : m && m.id) === me) return true;
+      }
+    } catch (_) {}
+    return false;
+  }
+
+  function addPing(entry) {
+    pings.unshift(entry);
+    if (pings.length > MAX_PINGS) pings.length = MAX_PINGS;
+    save();
+    if (cfg().showToast) {
+      alertedPings.add(String(entry.id));
+      while (alertedPings.size > MAX_PINGS) alertedPings.delete(alertedPings.values().next().value);
+      showPingAlert(entry);
+    }
+    return entry;
+  }
+
+  function pingKindFor(msg, channelId) {
+    const s = cfg();
+    if (!s.enabled) return null;
+    const me = myId();
+    if (!me || !msg || !msg.author || msg.author.id === me) return null;
+    if (s.skipBots && msg.author.bot) return null;
+    let kind = null;
+    if (!kind && s.pingReplies && isReplyToMe(msg, channelId, me)) kind = "reply";
+    if (!kind && s.pingMentions && mentionsMe(msg, me)) kind = "mention";
+    if (!kind && s.trackEveryone && (msg.mention_everyone === true || msg.mentionEveryone === true)) kind = "mention";
+    return kind;
+  }
+
+  function willShowDeleteAlert(msg, channelId, guildId, id) {
+    if (!cfg().showToast) return false;
+    if (id != null && alertedPings.has(String(id))) return true;
+    return !!pingKindFor(msg, channelId);
+  }
+
+  function check(msg, channelId, guildId) {
+    const kind = pingKindFor(msg, channelId);
+    if (!kind) return null;
+    const existing = pings.find((p) => String(p.id) === String(msg.id));
+    if (existing) return existing;
+    return addPing({
+      id: msg.id, c: channelId, g: guildId || null, ai: msg.author.id, an: nameOf(msg.author),
+      t: clip(msg.content, MAX_SNIPPET), k: kind, at: Date.now(),
+    });
+  }
+
+  function handle(channelId, guildId, ids, retainForFallback) {
+    const g = guildId || guildOf(channelId);
+    for (const id of ids) {
+      if (!id) continue;
+      const msg = getKnownMessage(channelId, id);
+      if (msg) {
+        const entry = check(msg, channelId, g);
+        if (entry && retainForFallback) retainedPings.set(String(id), entry);
+      }
+    }
+  }
+
+  function refreshRetainedMessage(msg, channelId, guildId) {
+    setTimeout(() => {
+      try {
+        FluxDispatcher.dispatch({ type: "MESSAGE_UPDATE", guildId, message: { id: msg.id, channel_id: channelId, guild_id: guildId, flags: (msg.flags | 0) | 0x20000000 } });
+      } catch (_) {}
+    }, 0);
+  }
+
+  function refreshGhostRows() {
+    for (const [id, entry] of retainedPings) {
+      const msg = getMessage(entry.c, id);
+      if (msg) refreshRetainedMessage(msg, entry.c, entry.g || guildOf(entry.c));
+    }
+  }
+
+  function retainGhostPing(msg, channelId, guildId, entry) {
+    retainedPings.set(String(msg.id), entry);
+    while (retainedPings.size > MAX_PINGS) retainedPings.delete(retainedPings.keys().next().value);
+    refreshRetainedMessage(msg, channelId, guildId);
+  }
+
+  function onDelete(e) {
+    if (!e.id || e.loggerRemoval) return null;
+    const msg = getKnownMessage(e.channelId, e.id);
+    if (!msg) return null;
+    const guildId = e.guildId || guildOf(e.channelId);
+    const entry = check(msg, e.channelId, guildId);
+    if (!entry || amlOwnsRetention(msg, e.channelId, guildId)) return null;
+    retainGhostPing(msg, e.channelId, guildId, entry);
+    return { type: "MESSAGE_LOGGER_BLOCKED", original: e, ghostPingLogger: true };
+  }
+
+  function onBulkDelete(e) {
+    if (!Array.isArray(e.ids)) return null;
+    const guildId = e.guildId || guildOf(e.channelId);
+    const pass = [];
+    const keptIds = [];
+    for (const id of e.ids) {
+      const msg = getKnownMessage(e.channelId, id);
+      const entry = msg ? check(msg, e.channelId, guildId) : null;
+      if (!entry || amlOwnsRetention(msg, e.channelId, guildId)) { pass.push(id); continue; }
+      retainGhostPing(msg, e.channelId, guildId, entry);
+      keptIds.push(id);
+    }
+    if (!keptIds.length) return null;
+    if (!pass.length) return { type: "MESSAGE_LOGGER_BLOCKED", original: e, ghostPingLogger: true };
+    return { ...e, ids: pass, loggerKept: keptIds, ghostPingLogger: true };
+  }
+
+  function paint(nodes, color) {
+    if (!color || !Array.isArray(nodes)) return nodes;
+    const out = [];
+    let run = [];
+    const flush = () => {
+      if (!run.length) return;
+      out.push({
+        type: "link", target: "usernameOnClick",
+        context: { username: "", usernameOnClick: { action: "0", userId: "0", linkColor: color, messageChannelId: "0" } },
+        content: run,
+      });
+      run = [];
+    };
+    for (const node of nodes) {
+      if (node && INLINE.has(node.type)) run.push(node);
+      else { flush(); out.push(node); }
+    }
+    flush();
+    return out;
+  }
+
+  const isOurs = (n) => !!n && typeof n === "object" && n.__gpl === 1;
+  function decorate(row, input) {
+    if (!row || !row.message) return;
+    const message = row.message;
+    if ((input && input.rowType !== undefined ? input.rowType : row.rowType) !== 1) return;
+    const ping = retainedPings.has(String(message.id)) && !amlOwnsDeletedMessage(message.id);
+    if (!ping) {
+      if (message.__gplOut && message.content === message.__gplOut) message.content = message.__gplBase;
+      else if (Array.isArray(message.content) && message.content.some(isOurs)) message.content = message.content.filter((n) => !isOurs(n));
+      if (message.__gplNameBase) {
+        message.colorString = message.__gplNameBase.colorString;
+        message.usernameColor = message.__gplNameBase.usernameColor;
+        delete message.__gplNameBase;
+      }
+      return;
+    }
+    const processColor = RN && RN.processColor;
+    const red = processColor ? processColor(RED) : null;
+    if (ping && processColor && red && cfg().redName !== false) {
+      if (!message.__gplNameBase) message.__gplNameBase = { colorString: message.colorString, usernameColor: message.usernameColor };
+      message.colorString = red;
+      message.usernameColor = red;
+      row.backgroundHighlight = { backgroundColor: processColor(RED + "26"), gutterColor: red };
+    } else if (message.__gplNameBase) {
+      message.colorString = message.__gplNameBase.colorString;
+      message.usernameColor = message.__gplNameBase.usernameColor;
+      delete message.__gplNameBase;
+    }
+    let base = message.__gplOut && message.content === message.__gplOut ? message.__gplBase : message.content;
+    if (Array.isArray(base) && base.some(isOurs)) base = base.filter((n) => !isOurs(n));
+    if (Array.isArray(base)) {
+      const out = ping && red ? paint(base, red) : base;
+      message.__gplBase = base;
+      message.__gplOut = out;
+      message.content = out;
+    }
+  }
+
+  function patchRender() {
+    let RowManager = findByName("RowManager");
+    if (!RowManager || !RowManager.prototype) {
+      try { RowManager = findByName("RowManager", false)?.default; } catch (_) {}
+    }
+    if (!RowManager || !RowManager.prototype || typeof RowManager.prototype.generate !== "function") {
+      toast("Ghost Ping Logger: could not find the message renderer");
+      return null;
+    }
+    return patcher.after("generate", RowManager.prototype, (args, result) => {
+      try { decorate(result, args[0]); } catch (_) {}
+    });
+  }
+
+  function hookDispatch(args) {
+    const e = args[0];
+    if (!e) return;
+    try {
+      if (e.loggerRemoval) return;
+      if (e.type === "MESSAGE_CREATE") {
+        rememberMessage(e.message);
+        if (e.message && e.message.id) {
+          receivedThisSession++;
+          const channelId = e.message.channel_id || e.message.channelId;
+          if (channelId) {
+            receivedChannelsThisSession.add(String(channelId));
+            if (isDM(getChannel(channelId))) receivedDMsThisSession++;
+          }
+        }
+      }
+      else if (e.type === "MESSAGE_UPDATE") rememberMessage(e.message, recentMessages.has(String(e.message && e.message.id)));
+      else if (e.type === "LOCAL_MESSAGE_CREATE" && e.message && e.message.id) rememberMessage(e.message);
+      else if (e.type === "MESSAGE_DELETE") {
+        const result = onDelete(e);
+        if (result) args[0] = result;
+      }
+      else if (e.type === "MESSAGE_DELETE_BULK") {
+        if (Array.isArray(e.loggerKept) && e.loggerKept.length) handle(e.channelId, e.guildId, e.loggerKept, true);
+        const result = onBulkDelete(e);
+        if (result) args[0] = result;
+      }
+      else if (e.type === "MESSAGE_LOGGER_BLOCKED" && e.original && !e.ghostPingLogger) {
+        const o = e.original;
+        if (o.type === "MESSAGE_DELETE") handle(o.channelId, o.guildId, [o.id], true);
+        else if (o.type === "MESSAGE_DELETE_BULK") handle(o.channelId, o.guildId, [].concat(o.ids || [], o.loggerKept || []), true);
+      }
+    } catch (_) {}
+  }
+
+  function addTestPing() {
+    const c = currentChannelId() || "0";
+    const entry = {
+      id: "test-" + Date.now(), c, g: guildOf(c), ai: "0", an: "Test user",
+      t: "This is a test ghost ping.", k: "mention", at: Date.now(),
+    };
+    pings.unshift(entry);
+    if (pings.length > MAX_PINGS) pings.length = MAX_PINGS;
+    save();
+    showPingAlert(entry);
+  }
+
+  function removePing(id) {
+    pings = pings.filter((p) => p.id !== id);
+    save();
+  }
+
+  function dismissHistoryNavigation(navigation) { let current=navigation,depth=0; while(current&&depth++<8){try{if(current.canGoBack?.()){if(typeof current.popToTop==="function")current.popToTop();else current.goBack?.();}current=current.getParent?.();}catch(_){break;}} }
+  function jumpTo(channelId,guildId,messageId,navigation){
+    if(!channelId||!messageId||String(messageId).startsWith("test-"))return;
+    const jump=(()=>{try{return findByProps("jumpToMessage");}catch(_){return null;}})();
+    const navigate=(()=>{try{return findByProps("transitionToChannel");}catch(_){return null;}})();
+    const perform=()=>{try{if(typeof jump?.jumpToMessage!=="function")throw Error();jump.jumpToMessage({channelId:String(channelId),messageId:String(messageId),flash:true,jumpType:"ANIMATED"});}catch(_){toast("Could not jump to this message");}};
+    try{if(typeof navigate?.transitionToChannel!=="function")throw Error();dismissHistoryNavigation(navigation);navigate.transitionToChannel(String(channelId),{});setTimeout(perform,650);}catch(_){toast("Could not open this channel");}
+  }
+  function ask(title, message, buttons) {
+    const ios = RN.Platform && RN.Platform.OS === "ios";
+    const list = buttons.slice(0, ios ? 6 : 3);
+    if (ios) list.push({ text: "Cancel", style: "cancel" });
+    try { showDiscordAlert("gpl-confirm", title, message, list); } catch (_) {}
+  }
+
+  function showCaptureTest() {
+    ask("Message capture test", "Since GPL started:\n" + receivedThisSession + " new message events\n" +
+      receivedChannelsThisSession.size + " conversations/channels\n" + receivedDMsThisSession + " DM messages\n\n" +
+      "Counts messages delivered by Discord while this plugin is running. Messages the app does not receive cannot be recorded.", [{ text: "OK" }]);
+  }
+
+  function showDiscordAlert(id, title, content, buttons) {
+    const h = React.createElement;
+    const alerts = findByProps("openAlert", "dismissAlert");
+    const components = findByProps("AlertModal", "AlertActions", "AlertActionButton");
+    if (!alerts || !components) throw new Error("Discord alert components unavailable");
+    const actions = h(components.AlertActions, null, ...buttons.slice(0, 4).map((button, index) => h(components.AlertActionButton, {
+      key: id + "-action-" + index, text: button.text,
+      variant: button.style === "destructive" ? "destructive" : button.style === "cancel" ? "secondary" : "primary",
+      onPress: button.onPress,
+    })));
+    alerts.openAlert(id, h(components.AlertModal, { title, content, actions }));
+  }
+
+  function openNativeInputAlert(props) {
+    const api = findByProps("openAlert", "dismissAlert");
+    if (!api || typeof api.openAlert !== "function") throw new Error("Discord alert API unavailable");
+    api.openAlert(props.id, React.createElement(NativeInputAlert, props));
+  }
+
+  function NativeInputAlert(props) {
+    const [value, setValue] = React.useState(String(props.initialValue || ""));
+    const h = React.createElement;
+    const parts = findByProps("AlertModal", "AlertActions", "AlertActionButton");
+    const inputModule = findByProps("TextInput");
+    const Input = inputModule && inputModule.TextInput;
+    const dismiss = () => { try { findByProps("openAlert", "dismissAlert").dismissAlert(props.id); } catch (_) {} };
+    const save = () => { dismiss(); if (typeof props.onSave === "function") props.onSave(value); };
+    const field = Input
+      ? h(Input, { value, onChange: setValue, keyboardType: props.keyboardType, placeholder: "", autoCapitalize: "none", autoCorrect: false })
+      : h(RN.TextInput, { value, onChangeText: setValue, keyboardType: props.keyboardType, placeholder: "", autoCapitalize: "none", autoCorrect: false });
+    const actions = h(parts.AlertActions, null,
+      h(parts.AlertActionButton, { text: "Cancel", variant: "secondary", onPress: dismiss }),
+      h(parts.AlertActionButton, { text: "Save", variant: "primary", onPress: save }));
+    return h(parts.AlertModal, { title: props.title, content: props.content, extraContent: field, actions });
+  }
+
+  function palette() {
+    let light = false;
+    try { ThemeStore = ThemeStore || findByStoreName("ThemeStore"); light = !!ThemeStore && ThemeStore.theme === "light"; } catch (_) {}
+    return light
+      ? { text: "#060607", sub: "#5C5E66", bg: "#FFFFFF", card: "#F2F3F5", acc: "#5865F2", accPressed: "#4752C4", blurple: "#5865F2", card2: "rgba(0,0,0,0.045)", chip: "rgba(0,0,0,0.07)", press: "rgba(0,0,0,0.06)", divider: "rgba(0,0,0,0.09)", off: "#B5BAC1" }
+      : { text: "#FFFFFF", sub: "#B5BAC1", bg: "#1E1F22", card: "#2B2D31", acc: "#5865F2", accPressed: "#4752C4", blurple: "#5865F2", card2: "rgba(255,255,255,0.06)", chip: "rgba(255,255,255,0.10)", press: "rgba(255,255,255,0.07)", divider: "rgba(255,255,255,0.09)", off: "#4E5058" };
 }
-function settingIconForTitle(title) {
+
+  function settingsFormComponent(name) {
+    let formModule = null;
+    try { formModule = findByProps("Form", "FormSection"); } catch (_) {}
+    const direct = (formModule && formModule[name]) || (ui.components && ui.components.Forms && ui.components.Forms[name]);
+    if (typeof direct === "function" || direct && typeof direct === "object") return direct;
+    try {
+      const module = findByProps(name);
+      const component = module && module[name];
+      if (typeof component === "function" || component && typeof component === "object") return component;
+    } catch (_) {}
+    for (const searchExports of [false, true]) {
+      try {
+        const found = findByName(name, searchExports);
+        const component = found && (found.default || found[name] || found);
+        if (typeof component === "function" || component && typeof component === "object") return component;
+      } catch (_) {}
+    }
+    return null;
+  }
+
+  function CustomSection(p){const C=palette();return React.createElement(RN.View,{style:{marginBottom:p.compact?14:22}},p.title?React.createElement(RN.Text,{style:{color:C.sub,fontSize:13,fontWeight:"700",letterSpacing:.4,marginHorizontal:5,marginBottom:9,textTransform:"uppercase"}},p.title):null,React.createElement(RN.View,{style:{backgroundColor:C.card,borderRadius:17,overflow:"hidden",borderWidth:1,borderColor:C.card2}},p.children));}
+  function settingIconForTitle(title) {
     const text = String(title || "").toLowerCase();
     const rules = [
         [/translate|translation|google|deepl/, "↔"], [/language/, "文"], [/color|appearance/, "◉"],
@@ -298,1575 +679,261 @@ function settingIconForTitle(title) {
     const match = rules.find(([pattern]) => pattern.test(text));
     return match ? match[1] : "•";
 }
-function CustomRow(props){const C=palette(),h=React.createElement,icon=props.icon||settingIconForTitle(props.title);return h(RN.Pressable,{accessibilityRole:props.onPress?"button":undefined,onPress:props.onPress,disabled:!props.onPress,style:({pressed})=>({minHeight:58,paddingHorizontal:15,paddingVertical:12,flexDirection:"row",alignItems:"center",backgroundColor:pressed?C.press:"transparent"})},icon?h(RN.Text,{style:{width:30,fontSize:18,color:C.sub,marginRight:7,textAlign:"center"}},icon):null,h(RN.View,{style:{flex:1,minWidth:0,paddingRight:8}},h(RN.Text,{numberOfLines:1,style:{color:C.text,fontSize:16,fontWeight:"600"}},props.title),props.subtitle?h(RN.Text,{numberOfLines:2,style:{color:C.sub,fontSize:13,marginTop:3,lineHeight:18}},props.subtitle):null),props.trailing||null,!props.last?h(RN.View,{style:{position:"absolute",bottom:0,left:icon?52:15,right:0,height:1,backgroundColor:C.card2}}):null);}
-function CustomSwitch(props) {
-    const h = React.createElement;
-    const C = palette();
-    const on = !!props.value;
-    const position = React.useRef(new RN.Animated.Value(on ? 1 : 0)).current;
-    React.useEffect(() => { RN.Animated.spring(position, { toValue: on ? 1 : 0, speed: 22, bounciness: 3, useNativeDriver: true }).start(); }, [on]);
-    return h(RN.Pressable, { accessibilityRole: "switch", accessibilityState: { checked: on }, onPress: () => props.onChange(!on), hitSlop: 8, style: { width: 48, height: 29, borderRadius: 16, padding: 3, justifyContent: "center", backgroundColor: on ? C.blurple : C.off } }, h(RN.Animated.View, { style: { width: 23, height: 23, borderRadius: 12, backgroundColor: "#FFFFFF", elevation: 1, transform: [{ translateX: position.interpolate({ inputRange: [0, 1], outputRange: [0, 19] }) }] } }));
-}
-function CustomAction(props) {
-    const h = React.createElement;
-    const C = palette();
-    return h(RN.Pressable, { onPress: props.onPress, disabled: props.disabled, style: ({ pressed }) => ({ minHeight: 48, borderRadius: 13, alignItems: "center", justifyContent: "center", paddingHorizontal: 16, marginTop: 9, backgroundColor: props.secondary ? C.chip : C.blurple, opacity: props.disabled ? 0.45 : pressed ? 0.75 : 1 }) }, h(RN.Text, { style: { color: "#FFFFFF", fontWeight: "700", fontSize: 16 } }, props.title));
-}
-function CustomInput(props) {
-    const h = React.createElement;
-    const C = palette();
-    return h(RN.TextInput, { ...props, placeholderTextColor: C.sub, style: [{ minHeight: 48, borderRadius: 13, borderWidth: 1, borderColor: C.off, backgroundColor: C.bg, color: C.text, paddingHorizontal: 14, fontSize: 16 }, props.style] });
-}
-function copyText(text) {
+function CustomRow(p){const C=palette(),h=React.createElement,icon=p.icon||settingIconForTitle(p.title);return h(RN.Pressable,{accessibilityRole:p.onPress?"button":undefined,onPress:p.onPress,disabled:!p.onPress,style:({pressed})=>({minHeight:58,paddingHorizontal:15,paddingVertical:12,flexDirection:"row",alignItems:"center",backgroundColor:pressed?C.press:"transparent"})},icon?h(RN.Text,{style:{width:30,fontSize:18,color:C.sub,marginRight:7,textAlign:"center"}},icon):null,h(RN.View,{style:{flex:1,minWidth:0,paddingRight:8}},h(RN.Text,{numberOfLines:1,style:{color:C.text,fontSize:16,fontWeight:"600"}},p.title),p.subtitle?h(RN.Text,{numberOfLines:2,style:{color:C.sub,fontSize:13,marginTop:3,lineHeight:18}},p.subtitle):null),p.trailing||null,!p.last?h(RN.View,{style:{position:"absolute",bottom:0,left:icon?52:15,right:0,height:1,backgroundColor:C.card2}}):null);}
+  function CustomSwitch(p){const C=palette(),on=!!p.value,pos=React.useRef(new RN.Animated.Value(on?1:0)).current;React.useEffect(()=>{RN.Animated.spring(pos,{toValue:on?1:0,speed:22,bounciness:3,useNativeDriver:true}).start();},[on]);return React.createElement(RN.Pressable,{accessibilityRole:"switch",accessibilityState:{checked:on},onPress:()=>p.onChange(!on),hitSlop:8,style:{width:48,height:29,borderRadius:16,padding:3,justifyContent:"center",backgroundColor:on?C.blurple:C.off}},React.createElement(RN.Animated.View,{style:{width:23,height:23,borderRadius:12,backgroundColor:"#FFFFFF",elevation:1,transform:[{translateX:pos.interpolate({inputRange:[0,1],outputRange:[0,19]})}]}}));}
+  function CustomAction(p){const C=palette();return React.createElement(RN.Pressable,{onPress:p.onPress,disabled:p.disabled,style:({pressed})=>({minHeight:48,borderRadius:13,alignItems:"center",justifyContent:"center",paddingHorizontal:16,marginTop:9,backgroundColor:p.secondary?C.chip:C.blurple,opacity:p.disabled?0.45:pressed?0.75:1})},React.createElement(RN.Text,{style:{color:"#FFFFFF",fontWeight:"700",fontSize:16}},p.title));}
+  function CustomInput(p){const C=palette();return React.createElement(RN.TextInput,{...p,placeholderTextColor:C.sub,style:[{minHeight:48,borderRadius:13,borderWidth:1,borderColor:C.off,backgroundColor:C.bg,color:C.text,paddingHorizontal:14,fontSize:16},p.style]});}
+  function Settings() {
+    rainStore.useStore();
+    const [screen, setScreen] = React.useState("main");
+    const screenProgress = React.useRef(new RN.Animated.Value(1)).current;
+    React.useEffect(() => { screenProgress.setValue(0); RN.Animated.timing(screenProgress, { toValue: 1, duration: 180, useNativeDriver: true }).start(); }, [screen]);
+    const [limit, setLimit] = React.useState(PAGE);
+    const [, bump] = React.useState(0);
+    let settingsNavigation = null;
     try {
-        clipboard.setString(text);
-        toast("Copied");
-    }
-    catch (_) {
-        toast("Could not copy");
-    }
-}
-/* ------------------------------------------------------------------ */
-/* translation engine                                                  */
-/* ------------------------------------------------------------------ */
-function fetchT(url, opts) {
-    let timer;
-    const clear = () => clearTimeout(timer);
-    return Promise.race([
-        fetch(url, opts),
-        new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("Timed out")), TIMEOUT); }),
-    ]).then(res => { clear(); return res; }, err => { clear(); throw err; });
-}
-function callApi(provider, text, tl, sl) {
-    if (provider === "deepl") {
-        const key = String(qt.deeplApiKey || "").trim();
-        if (!key)
-            return Promise.reject(new Error("Add your DeepL API key in Quick Translate settings"));
-        const endpoint = key.endsWith(":fx") ? "https://api-free.deepl.com/v2/translate" : "https://api.deepl.com/v2/translate";
-        const deeplCode = (code) => code === "zh-CN" || code === "zh-TW" ? "ZH" : code.toUpperCase();
-        const target = tl === "en" ? "EN-US" : tl === "pt" ? "PT-BR" : deeplCode(tl);
-        const source = sl && sl !== "auto" ? deeplCode(sl) : undefined;
-        const body = { text: [text], target_lang: target };
-        if (source)
-            body.source_lang = source;
-        return fetchT(endpoint, {
-            method: "POST",
-            headers: { "Authorization": "DeepL-Auth-Key " + key, "Content-Type": "application/json" },
-            body: JSON.stringify(body),
-        }).then(async (res) => {
-            const json = await res.json().catch(() => null);
-            if (!res.ok)
-                throw new Error((json?.message || "DeepL request failed") + " (HTTP " + res.status + ")");
-            return json;
-        }).then((json) => {
-            const result = json?.translations?.[0];
-            if (!result?.text)
-                throw new Error(json?.message || "DeepL returned an empty translation");
-            return { text: String(result.text), src: String(result.detected_source_language || source || "auto").toLowerCase() };
-        });
-    }
-    const params = "client=gtx&dt=t&sl=" + encodeURIComponent(sl || "auto") + "&tl=" + encodeURIComponent(tl);
-    const base = "https://translate.googleapis.com/translate_a/single?" + params;
-    const req = text.length < 1200
-        ? fetchT(base + "&q=" + encodeURIComponent(text))
-        : fetchT(base, {
-            method: "POST",
-            headers: { "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8" },
-            body: "q=" + encodeURIComponent(text),
-        });
-    return req.then((res) => {
-        if (!res.ok)
-            throw new Error("HTTP " + res.status);
-        return res.json();
-    }).then((json) => {
-        const segments = Array.isArray(json) && Array.isArray(json[0]) ? json[0] : [];
-        const out = segments.map((s) => (s && s[0]) || "").join("");
-        if (!out && text.trim())
-            throw new Error("Empty response");
-        return { text: out, src: (Array.isArray(json) && typeof json[2] === "string" && json[2]) || sl };
-    });
-}
-function prettyToken(t) {
-    if (/^<a?:[\w~]+:\d+>$/.test(t))
-        return t;
-    let m;
-    if ((m = /^<@!?(\d+)>$/.exec(t)))
-        return "@" + nameOf(safe(() => UserStore.getUser(m[1]), null));
-    if ((m = /^<#(\d+)>$/.exec(t)))
-        return "#" + ((getChannel(m[1]) || {}).name || "channel");
-    if (/^<@&\d+>$/.test(t))
-        return "@role";
-    if (/^<t:/.test(t))
-        return "";
-    return t;
-}
-function protect(text) {
-    const tokens = [];
-    let out = text.replace(PROTECT, m => { tokens.push(m); return "§" + (tokens.length - 1) + "§"; });
-    const words = Array.isArray(qt.protectedWords) ? qt.protectedWords : [];
-    for (const raw of words) {
-        const word = String(raw || "").trim();
-        if (!word)
-            continue;
-        const escaped = word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-        const pattern = new RegExp("\\b" + escaped + "\\b", "gi");
-        out = out.replace(pattern, m => { tokens.push(m); return "§" + (tokens.length - 1) + "§"; });
-    }
-    return { out, tokens };
-}
-function restore(text, tokens, pretty) {
-    const used = new Set();
-    let out = text.replace(/§\s*(\d+)\s*§/g, (m, i) => {
-        const t = tokens[Number(i)];
-        if (t === undefined)
-            return m;
-        used.add(Number(i));
-        return pretty ? prettyToken(t) : t;
-    });
-    if (!pretty) {
-        const missing = tokens.filter((_, i) => !used.has(i));
-        if (missing.length)
-            out += " " + missing.join(" ");
-    }
-    return out;
-}
-function translate(text, tl, sl, pretty, channelId = currentChannelId(), messageId = null) {
-    const source = sl || "auto";
-    const protectedWordsKey = (Array.isArray(qt.protectedWords) ? qt.protectedWords : []).map((word) => String(word).toLowerCase().trim()).filter(Boolean).sort().join(",");
-    const cacheKey = (qt.provider || "google") + "|" + (pretty ? "p|" : "r|") + source + "|" + tl + "|w:" + protectedWordsKey + "|" + text;
-    const generation = cacheGeneration;
-    if (cache.has(cacheKey)) {
-        const cached = cache.get(cacheKey);
-        addHistory(text, cached.text, cached, tl, channelId, messageId);
-        return Promise.resolve(cached);
-    }
-    if (inFlight.has(cacheKey))
-        return inFlight.get(cacheKey).then(result => {
-            if (generation === cacheGeneration)
-                addHistory(text, result.text, result, tl, channelId, messageId);
-            return result;
-        });
-    const { out, tokens } = protect(text);
-    if (!out.replace(/§\d+§/g, "").trim())
-        return Promise.resolve({ same: true, text, src: source });
-    const selectedProvider = qt.provider || "google";
-    const requestProvider = (provider) => enqueueRequest(() => callApi(provider, out, tl, source));
-    const request = (selectedProvider !== "deepl"
-        ? requestProvider("google").then(res => Object.assign(res, { provider: "google" }))
-        : requestProvider("deepl")
-            .then(res => Object.assign(res, { provider: "deepl" }))
-            .catch((deeplError) => requestProvider("google")
-            .then(res => Object.assign(res, { provider: "google" }))
-            .catch((googleError) => { throw new Error("DeepL and Google failed: " + (googleError?.message || deeplError?.message || "request failed")); }))).then(res => {
-        const base = String(tl).toLowerCase().split("-")[0];
-        const detected = String(res.src || "").toLowerCase().split("-")[0];
-        const result = source === "auto" && (!detected || detected === "auto" || detected === base)
-            ? { same: true, text, src: res.src, provider: res.provider }
-            : { same: false, text: restore(res.text, tokens, pretty), src: res.src, provider: res.provider };
-        if (generation === cacheGeneration) {
-            cache.set(cacheKey, result);
-            trimMap(cache, MAX_CACHE);
-            addHistory(text, result.text, result, tl, channelId, messageId);
-        }
-        return result;
-    });
-    inFlight.set(cacheKey, request);
-    request.then(() => { if (inFlight.get(cacheKey) === request)
-        inFlight.delete(cacheKey); }, () => { if (inFlight.get(cacheKey) === request)
-        inFlight.delete(cacheKey); });
-    return request;
-}
-/* ------------------------------------------------------------------ */
-/* chat input bridge (reads / writes the text box)                     */
-/* ------------------------------------------------------------------ */
-function isChatInput(props) {
-    const ph = typeof props.placeholder === "string" ? props.placeholder : "";
-    if (ph && /^(message|mesaj|mensaje|nachricht|messag|написать|сообщение)/i.test(ph))
-        return true;
-    const ch = getChannel(currentChannelId());
-    if (!ch)
-        return false;
-    let name = ch.name;
-    if (isDM(ch) && !name) {
-        const rid = ch.recipients && ch.recipients[0];
-        name = rid ? nameOf(safe(() => UserStore.getUser(rid), null)) : null;
-    }
-    if (name && name !== "Unknown" && ph.toLowerCase().includes(String(name).toLowerCase()))
-        return true;
-    // Discord's composer is a multiline, send-enabled input, including in DMs where
-    // the placeholder may be omitted by the current Discord build.
-    return !!props.multiline && typeof props.onChangeText === "function" &&
-        (typeof props.onSubmitEditing === "function" || props.returnKeyType === "send" || props.maxLength === 2000);
-}
-function installInputCapture() {
-    const TI = RN.TextInput;
-    if (!TI || typeof TI.render !== "function")
-        return;
-    unpatches.push(before("render", TI, (args) => {
-        try {
-            const props = args[0];
-            if (!props || !isChatInput(props))
-                return;
-            bridge.seen = Date.now();
-            const original = props.onChangeText;
-            bridge.change = typeof original === "function" ? original : null;
-            if (typeof props.value === "string")
-                bridge.text = props.value;
-            args[0] = Object.assign({}, props, {
-                onChangeText: (t) => {
-                    bridge.text = t;
-                    if (original)
-                        original(t);
-                },
-            });
-            const ref = args[1];
-            let wrapped = ref && typeof ref === "object" ? refWrappers.get(ref) : null;
-            if (!wrapped) {
-                wrapped = (inst) => {
-                    bridge.inst = inst;
-                    if (typeof ref === "function")
-                        ref(inst);
-                    else if (ref && typeof ref === "object")
-                        ref.current = inst;
-                };
-                if (ref && typeof ref === "object")
-                    refWrappers.set(ref, wrapped);
-            }
-            args[1] = wrapped;
-        }
-        catch (_) { /* ignore */ }
-    }));
-}
-function composerRef() {
-    const channelId = currentChannelId();
-    if (!channelId)
-        return null;
-    const api = safe(() => findByProps("getChatInputRef"), null);
-    return safe(() => api?.getChatInputRef?.(channelId, 0), null);
-}
-function readInput() {
-    if (Date.now() - bridge.seen < 600000 && String(bridge.text || "").trim())
-        return String(bridge.text);
-    const ref = composerRef();
-    const value = safe(() => typeof ref?.getText === "function" ? ref.getText() :
-        typeof ref?.getValue === "function" ? ref.getValue() :
-            typeof ref?.text === "string" ? ref.text :
-                typeof ref?.value === "string" ? ref.value :
-                    typeof ref?.props?.value === "string" ? ref.props.value : "", "");
-    return typeof value === "string" ? value : "";
-}
-function writeInput(text) {
-    let ok = false;
-    if (bridge.change) {
-        try {
-            bridge.change(text);
-            ok = true;
-        }
-        catch (_) { /* ignore */ }
-    }
-    if (bridge.inst && typeof bridge.inst.setNativeProps === "function") {
-        try {
-            bridge.inst.setNativeProps({ text });
-            ok = true;
-        }
-        catch (_) { /* ignore */ }
-    }
-    if (!ok) {
-        const ref = composerRef();
-        try {
-            if (typeof ref?.setText === "function") {
-                ref.setText(text);
-                ok = true;
-            }
-            else if (typeof ref?.setValue === "function") {
-                ref.setValue(text);
-                ok = true;
-            }
-            else if (typeof ref?.setNativeProps === "function") {
-                ref.setNativeProps({ text });
-                ok = true;
-            }
-            else if (typeof ref?.clear === "function" && typeof ref?.insertText === "function") {
-                ref.clear();
-                ref.insertText(text);
-                ok = true;
-            }
-        }
-        catch (_) { /* use the captured TextInput bridge when available */ }
-    }
-    if (ok)
-        bridge.text = text;
-    return ok;
-}
-function translateCurrentText(tl, sl) {
-    const text = readInput();
-    if (!text.trim()) {
-        toast("Type a message in the chat box first");
-        return Promise.resolve(false);
-    }
-    if (!(bridge.change || bridge.inst || composerRef())) {
-        toast("Discord could not access the message box; reopen the chat and try again");
-        return Promise.resolve(false);
-    }
-    const channelId = currentChannelId();
-    return translate(text, tl, sl, false, channelId).then(result => {
-        if (result.same) {
-            armed = null;
-            notifyButton();
-            toast("Already in " + langName(tl));
-            return false;
-        }
-        if (writeInput(result.text)) {
-            lastOriginal = text;
-            lastOriginalChannelId = currentChannelId();
-            lastTranslatedText = result.text;
-            return true;
-        }
-        else
-            toast("Could not update the chat box; the original text is unchanged");
-        return false;
-    }).catch((error) => { toast("Translation failed: " + (error?.message || error)); return false; });
-}
-function restoreOriginal() {
-    if (lastOriginal == null) {
-        toast("Nothing to restore");
-        return;
-    }
-    if (writeInput(lastOriginal)) {
-        lastOriginal = null;
-        lastOriginalChannelId = null;
-        lastTranslatedText = null;
-    }
-    else
-        toast("Could not write to the chat box");
-}
-function patchSend() {
-    const Messages = findByProps("sendMessage", "receiveMessage");
-    if (!Messages)
-        return;
-    unpatches.push(instead("sendMessage", Messages, (args, orig) => {
-        let pending = null;
-        let oneShotJob = null;
-        let oneShotTranslated = false;
-        try {
-            const msg = args[1];
-            const job = qt.draftBeforeSend === false ? armed : null;
-            if (job && msg && typeof msg.content === "string" && msg.content.trim()) {
-                if (job.oneShot)
-                    oneShotJob = job;
-                else if (!qt.keepArmed) {
-                    armed = null;
-                    notifyButton();
-                }
-                pending = translate(msg.content, job.tl, job.sl, false, currentChannelId()).then(r => {
-                    if (!r.same) {
-                        args[1] = Object.assign({}, msg, { content: r.text });
-                        if (job.oneShot)
-                            oneShotTranslated = true;
-                    }
-                });
-            }
-        }
-        catch (_) {
-            toast("Translation failed, sent the original message");
-        }
-        const send = () => {
-            const msg = args[1];
-            const clearRestore = () => {
-                if (lastOriginal != null && msg && (String(args[0]) === String(lastOriginalChannelId || "") || currentChannelId() === lastOriginalChannelId)) {
-                    lastOriginal = null;
-                    lastOriginalChannelId = null;
-                    lastTranslatedText = null;
-                }
-                bridge.text = "";
-                if (oneShotJob && oneShotTranslated) {
-                    armed = oneShotJob.resume || null;
-                    notifyButton();
-                }
-            };
-            const result = orig(...args);
-            if (result && typeof result.then === "function")
-                return result.then((value) => { clearRestore(); return value; });
-            clearRestore();
-            return result;
-        };
-        if (!pending)
-            return send();
-        return pending.catch(() => { toast("Translation failed, sent the original message"); }).then(send);
-    }));
-}
-/* ------------------------------------------------------------------ */
-/* translated messages in the chat                                     */
-/* ------------------------------------------------------------------ */
-function refreshRow(channelId, id) {
-    const msg = getMessage(channelId, id);
-    if (!msg)
-        return;
-    const guildId = safe(() => getChannel(channelId).guild_id, null);
-    setTimeout(() => {
-        try {
-            FluxDispatcher.dispatch({
-                type: "MESSAGE_UPDATE",
-                guildId,
-                message: { id, channel_id: channelId, guild_id: guildId, flags: (msg.flags | 0) ^ FLAG_TOGGLE },
-            });
-        }
-        catch (_) { /* ignore */ }
-    }, 0);
-}
-function translateMessage(message, tl, silent = false, immersiveOverride, autoIncoming = false) {
-    const text = message && message.content;
-    if (typeof text !== "string" || !text.trim()) {
-        if (!silent)
-            toast("This message has no text");
-        return Promise.resolve(false);
-    }
-    const channelId = message.channel_id || message.channelId || currentChannelId();
-    if (!silent)
-        toast("Translating...");
-    return translate(text, tl, "auto", true, channelId, message.id != null ? String(message.id) : null).then(r => {
-        if (r.same) {
-            if (!silent)
-                toast("Already in " + langName(tl));
-            return true;
-        }
-        translations.set(String(message.id), { text: r.text, src: r.src, tl, at: Date.now(), ch: channelId, immersive: immersiveOverride, autoIncoming });
-        trimMap(translations, MAX_TRANSLATIONS);
-        saveMessageTranslation(message, r, tl, String(channelId), autoIncoming, immersiveOverride);
-        setTimeout(() => refreshRow(channelId, message.id), silent ? 220 : 0);
-        return true;
-    }).catch((e) => {
-        if (!silent)
-            toast("Translation failed: " + (e && e.message ? e.message : e));
-        return false;
-    });
-}
-function onIncomingMessage(event) {
-    try {
-        const state = useQuickTranslate.getState();
-        const message = event?.message;
-        const channelId = String(event?.channelId || message?.channel_id || "");
-        if (!message?.id || !channelId || !message.content?.trim())
-            return;
-        if (message.type != null && message.type !== 0)
-            return;
-        const me = safe(() => UserStore.getCurrentUser?.()?.id || UserStore.getCurrentUserId?.(), null);
-        if (me && String(message.author?.id) === String(me)) {
-            const draftEntry = historyEntries.find(entry => !entry.messageId && entry.channelId === channelId && entry.translated === message.content && Date.now() - entry.at < 10 * 60 * 1000);
-            if (draftEntry) {
-                draftEntry.messageId = String(message.id);
-                persistLocalData();
-            }
-            return;
-        }
-        if (!(state.autoChannelIds || []).map(String).includes(channelId))
-            return;
-        const target = state.targetIn || "en";
-        if (autoSeen.has(String(message.id)))
-            return;
-        autoSeen.add(String(message.id));
-        if (autoSeen.size > 500)
-            autoSeen.delete(autoSeen.values().next().value);
-        translateMessage(message, target, true, undefined, true);
-    }
-    catch (_) { /* incoming translation must never affect message delivery */ }
-}
-function messageArray(channelId) {
-    const result = safe(() => MessageStore.getMessages(channelId), null);
-    if (!result)
-        return [];
-    const value = safe(() => result.toArray(), null) || result._array || result.messages || result;
-    return Array.isArray(value) ? value : [];
-}
-function openBulkSelection(message) {
-    const channelId = String(message?.channel_id || message?.channelId || currentChannelId() || "");
-    if (!channelId) {
-        toast("Could not find this message’s channel");
-        return;
-    }
-    bulkSelectionRequest = { channelId, seedMessage: message, nonce: ++bulkSelectionNonce };
-    notifyButton();
-}
-function BulkMessageSelector(props) {
-    const h = React.createElement;
+      const navigationModule = findByProps("useNavigation");
+      const useNavigation = navigationModule && navigationModule.useNavigation;
+      if (typeof useNavigation === "function") settingsNavigation = useNavigation();
+    } catch (_) {}
+    lastSettingsNavigation = settingsNavigation;
+    const refreshUI = () => bump((x) => x + 1);
     const C = palette();
-    const [selected, setSelected] = React.useState([]);
-    const [busy, setBusy] = React.useState(false);
-    const [query, setQuery] = React.useState("");
-    React.useEffect(() => {
-        setSelected(props.request.seedMessage?.id ? [String(props.request.seedMessage.id)] : []);
-        setQuery("");
-        setBusy(false);
-    }, [props.request.nonce]);
-    const seed = props.request.seedMessage;
-    const seedId = String(seed?.id || "");
-    const recent = messageArray(props.request.channelId)
-        .filter((m) => m?.id && typeof m.content === "string" && m.content.trim() && (m.type == null || m.type === 0))
-        .slice(-70).reverse();
-    const messages = [seed, ...recent.filter((m) => String(m.id) !== seedId)].filter((m) => m?.id);
-    const q = query.trim().toLowerCase();
-    const visible = messages.filter((m) => !q || String(m.content).toLowerCase().includes(q));
-    const isAll = visible.length > 0 && visible.every((m) => selected.includes(String(m.id)));
-    const toggle = (message) => {
-        const id = String(message.id);
-        setSelected((current) => current.includes(id) ? current.filter(x => x !== id) : current.concat(id));
+    const h = React.createElement;
+    const F = {
+      TableRowGroup: settingsFormComponent("TableRowGroup"),
+      TableRow: settingsFormComponent("TableRow"),
+      TableSwitchRow: settingsFormComponent("TableSwitchRow"),
+      FormSection: settingsFormComponent("FormSection"),
+      FormRow: settingsFormComponent("FormRow"),
+      FormSwitchRow: settingsFormComponent("FormSwitchRow"),
+      FormSwitch: settingsFormComponent("FormSwitch"),
+      FormDivider: settingsFormComponent("FormDivider"),
     };
-    const run = async () => {
-        const byId = new Map(messages.map((m) => [String(m.id), m]));
-        const chosen = selected.map(id => byId.get(id)).filter(Boolean);
-        if (!chosen.length) {
-            toast("Select at least one message");
-            return;
+    const nativeIconCache = new Map();
+    const settingIcon = (key, label) => {
+      const Icon = (F.TableRow && F.TableRow.Icon) || (F.FormRow && F.FormRow.Icon);
+      if (!Icon || !ui.assets || typeof ui.assets.getAssetIDByName !== "function") return undefined;
+      const cacheKey = String(key || "") + " " + String(label || "");
+      if (nativeIconCache.has(cacheKey)) return nativeIconCache.get(cacheKey);
+      const text = cacheKey.toLowerCase();
+      const patterns = /color|redname|namecolor/.test(text) ? [/paint_brush/i, /palette/i, /color/i]
+        : /separator/.test(text) ? [/more_vertical/i, /dots_vertical/i, /ellipsis_vertical/i, /more/i]
+        : /notify.?edit|track.?edit/.test(text) ? [/edit/i, /pencil/i, /audit_update/i]
+        : /time|clock/.test(text) ? [/clock/i, /time/i]
+        : /deleted|delete|ghost|ping/.test(text) ? [/eye_hidden/i, /delete/i, /trash/i, /message/i]
+        : /edit|edited/.test(text) ? [/edit/i, /pencil/i, /audit_update/i]
+        : /ignore/.test(text) ? [/close_24px/i, /person/i, /ignore/i]
+        : /bot/.test(text) ? [/close_24px/i, /bot/i]
+        : /user/.test(text) ? [/person/i, /user/i]
+        : /color/.test(text) ? [/paint_brush/i, /color/i, /palette/i]
+        : /storage|save|persist|cache/.test(text) ? [/storage/i, /save/i, /database/i, /download/i]
+        : /search|filter/.test(text) ? [/search/i, /filter/i]
+        : /message|log/.test(text) ? [/message/i, /chat/i, /text/i]
+        : /server|channel/.test(text) ? [/server/i, /channel/i]
+        : null;
+      let icon = null;
+      try {
+        const names = Object.keys(ui.assets.all || {});
+        let name = null;
+        if (patterns) for (const pattern of patterns) { name = names.find((candidate) => pattern.test(candidate)); if (name) break; }
+        if (name) {
+          const source = ui.assets.getAssetIDByName(name);
+          if (source != null) icon = h(Icon, { source });
         }
-        setBusy(true);
-        props.onClose();
-        let done = 0;
-        for (const item of chosen)
-            if (await translateMessage(item, qt.targetIn || "en", true))
-                done++;
-        toast(done + " of " + chosen.length + " messages translated");
-        setBusy(false);
+      } catch (_) {}
+      nativeIconCache.set(cacheKey, icon || undefined);
+      return icon || undefined;
     };
-    return h(RN.Modal, { visible: true, transparent: false, animationType: "none", onRequestClose: props.onClose, statusBarTranslucent: true }, h(RN.View, { style: { flex: 1, backgroundColor: C.bg, paddingTop: 48, paddingHorizontal: 16, paddingBottom: 18 } }, h(RN.View, { style: { flexDirection: "row", alignItems: "center", marginBottom: 14 } }, h(RN.Pressable, { onPress: props.onClose, hitSlop: 10, style: { padding: 8, marginLeft: -8, marginRight: 8 } }, h(RN.Text, { style: { color: C.text, fontSize: 27 } }, "‹")), h(RN.View, { style: { flex: 1 } }, h(RN.Text, { style: { color: C.text, fontSize: 22, fontWeight: "800" } }, "Bulk translate"), h(RN.Text, { style: { color: C.sub, fontSize: 13, marginTop: 2 } }, selected.length + " selected · newest message first"))), h(CustomInput, { value: query, placeholder: "Search messages", onChangeText: setQuery, autoCorrect: false, style: { marginBottom: 10 } }), h(RN.View, { style: { flexDirection: "row", marginBottom: 10 } }, h(RN.View, { style: { flex: 1, marginRight: 6 } }, h(CustomAction, { title: isAll ? "Deselect all" : "Select all", secondary: true, onPress: () => setSelected((current) => isAll ? current.filter(id => !visible.some((m) => String(m.id) === id)) : Array.from(new Set(current.concat(visible.map((m) => String(m.id)))))) })), h(RN.View, { style: { flex: 1, marginLeft: 6 } }, h(CustomAction, { title: "Clear selection", secondary: true, onPress: () => setSelected([]) }))), visible.length ? h(RN.ScrollView, { style: { flex: 1 }, keyboardShouldPersistTaps: "handled", contentContainerStyle: { paddingBottom: 12 } }, h(CustomSection, { title: "Messages" }, ...visible.map((message, index) => {
-        const id = String(message.id);
-        const marked = selected.includes(id);
-        const label = String(message.content).replace(/\s+/g, " ").trim();
-        const author = nameOf(message.author);
-        return h(CustomRow, { key: id, title: (id === seedId ? "Selected message · " : "") + author, subtitle: label, last: index === visible.length - 1,
-            trailing: h(RN.View, { style: { width: 23, height: 23, borderRadius: 6, borderWidth: 1.5, borderColor: marked ? C.blurple : C.off, backgroundColor: marked ? C.blurple : "transparent", alignItems: "center", justifyContent: "center" } }, marked ? h(RN.Text, { style: { color: "#FFFFFF", fontSize: 15, fontWeight: "800" } }, "✓") : null),
-            onPress: () => toggle(message) });
-    }))) : h(RN.View, { style: { flex: 1, alignItems: "center", justifyContent: "center" } }, h(RN.Text, { style: { color: C.sub } }, "No loaded messages match this search.")), h(CustomAction, { title: busy ? "Translating…" : "Translate " + selected.length + " messages", disabled: busy || !selected.length, onPress: run })));
-}
-function refreshTranslated() {
-    translations.forEach((t, id) => { if (t.ch)
-        refreshRow(t.ch, id); });
-}
-function showOriginal(message) {
-    const channelId = message.channel_id || message.channelId || currentChannelId();
-    translations.delete(message.id);
-    refreshRow(channelId, message.id);
-}
-function paint(nodes, color) {
-    if (!color)
-        return nodes;
-    return [{
-            type: "link",
-            target: "usernameOnClick",
-            context: { username: "", usernameOnClick: { action: "0", userId: "0", linkColor: color, messageChannelId: "0" } },
-            content: nodes.filter(n => n && INLINE.has(n.type)),
-        }];
-}
-function stripOurs(nodes) {
-    const out = [];
-    for (const n of nodes) {
-        if (n && n.__tr)
-            continue;
-        if (n && Array.isArray(n.content)) {
-            const inner = stripOurs(n.content);
-            if (!inner.length && n.content.length)
-                continue;
-            out.push(inner.length === n.content.length ? n : Object.assign({}, n, { content: inner }));
+
+    const rowSet=new WeakSet(),sectionTitles=new WeakMap(),mark=(el)=>{rowSet.add(el);return el;},HEXCOLOR=/^#[0-9A-Fa-f]{6}$/;
+    const Text=(props,...kids)=>h(RN.Text,props,...kids),rowIcon=(key)=>/color/.test(key)?"\u25C9":/capture|cache|message|history|nav|log/.test(key)?"\u25F7":/filter|search/.test(key)?"\u2315":/ignore/.test(key)?"\u2298":"\u2726";
+    const Section=(title)=>{const m=h(RN.View,{key:"sec-"+title});sectionTitles.set(m,title);return m;};
+    const valueChip=(r)=>{if(!r)return null;if(r===">"||r==="\u203A")return Text({style:{color:C.sub,fontSize:21,marginLeft:7}},"\u203A");const v=String(r);if(HEXCOLOR.test(v))return h(RN.View,{style:{flexDirection:"row",alignItems:"center",marginLeft:8}},h(RN.View,{style:{width:18,height:18,borderRadius:9,backgroundColor:v,borderWidth:1,borderColor:C.divider}}),Text({style:{color:C.sub,fontSize:13,marginLeft:8}},v));return Text({style:{color:C.sub,fontSize:14,marginLeft:8},numberOfLines:1},v);};
+    const PressRow=(key,label,sub,onPress,right)=>mark(h(CustomRow,{key,title:label,subtitle:sub,onPress,trailing:key==="capture-mode"?h(RN.View,{style:{flexDirection:"row",alignItems:"center",backgroundColor:C.chip,borderRadius:10,borderWidth:1,borderColor:C.blurple,paddingHorizontal:9,paddingVertical:6,marginLeft:6}},h(RN.Text,{numberOfLines:1,style:{color:C.text,fontSize:12,fontWeight:"700",maxWidth:120}},String(right||"Select")),h(RN.Text,{style:{color:C.blurple,fontSize:16,fontWeight:"800",marginLeft:5}},"⌄")):valueChip(right)}));
+    const switchRow=(key,label,sub,value,change)=>mark(h(CustomRow,{key,title:label,subtitle:sub,trailing:h(CustomSwitch,{value,onChange:change})}));
+    const Btn=(key,title,onPress,color)=>mark(h(CustomAction,{key,title:key==="back"?"\u2039  Back":title,onPress,secondary:key!=="clear"&&key!=="test",danger:color===RED}));
+    const Empty=(key,t)=>Text({key,style:{color:C.sub,fontSize:14,lineHeight:20,paddingHorizontal:14,paddingVertical:14,textAlign:"center"}},t),Title=(key,t)=>Text({key,style:{color:C.text,fontSize:22,fontWeight:"800",paddingTop:8,paddingBottom:8}},t);
+    const compose=(list)=>{const out=[];let run=[],title=null,n=0;const flush=()=>{if(!run.length){if(title)out.push(h(CustomSection,{key:"section-"+n++,title}));title=null;return;}const rows=run.map((r,i)=>React.cloneElement(r,{last:i===run.length-1}));out.push(h(CustomSection,{key:"section-"+n++,title},...rows));run=[];title=null;};for(const el of list){if(el&&sectionTitles.has(el)){flush();title=sectionTitles.get(el);}else if(el&&rowSet.has(el))run.push(el);else{flush();if(el)out.push(el);}}flush();return out;};
+    const Switch = (key, label, sub, onChange) => {
+      const value = !!cfg()[key];
+      const change = onChange || ((v) => { cfg()[key] = v; refreshUI(); });
+      return switchRow(key, label, sub, value, change);
+    };
+
+    const retentionLabel = () => (cfg().retentionDays === 7 ? "7 days" : cfg().retentionDays === 30 ? "30 days" : "Forever");
+    const captureModeLabel = () => cfg().captureMode === "expanded" ? "All new messages" : "Loaded messages";
+    const captureModeDescription = () => cfg().captureMode === "expanded"
+      ? "Captures messages delivered outside the open chat."
+      : "Captures messages loaded in the open chat.";
+    const chooseCaptureMode = (mode) => {
+      cfg().captureMode = mode;
+      if (mode === "loaded") clearRecentMessages();
+      if (mode === "loaded") { cfg().receivedMessages = []; recentArchiveDirty = false; if (recentArchiveTimer) { clearTimeout(recentArchiveTimer); recentArchiveTimer = null; } }
+      refreshUI();
+    };
+    const openCaptureModeMenu = () => {
+      const select = (mode) => {
+        chooseCaptureMode(mode);
+        try { const hide = findByProps("openLazy", "hideActionSheet"); hide && hide.hideActionSheet && hide.hideActionSheet(); } catch (_) {}
+      };
+      try {
+        const sheets = findByProps("showSimpleActionSheet");
+        if (sheets && typeof sheets.showSimpleActionSheet === "function") {
+          sheets.showSimpleActionSheet({ key: "capture-mode-selector", header: { title: "Capture mode" }, options: [
+            { label: "All new messages", isMarked: cfg().captureMode === "expanded", onPress: () => select("expanded") },
+            { label: "Loaded messages", isMarked: cfg().captureMode !== "expanded", onPress: () => select("loaded") }
+          ] });
+          return;
         }
-        else
-            out.push(n);
-    }
-    return out;
-}
-function translatedNodes(value) {
-    const nodes = [];
-    const emoji = /<(a?):([\w~]+):(\d+)>/g;
-    let last = 0;
-    let match;
-    while ((match = emoji.exec(value))) {
-        if (match.index > last)
-            nodes.push({ type: "text", content: value.slice(last, match.index), __tr: true });
-        const id = match[3];
-        const webp = `https://cdn.discordapp.com/emojis/${id}.webp?size=128`;
-        nodes.push({ type: "customEmoji", id, alt: match[2], src: match[1] ? webp.replace(".webp", ".gif") : webp, frozenSrc: webp });
-        last = match.index + match[0].length;
-    }
-    if (last < value.length || !nodes.length)
-        nodes.push({ type: "text", content: value.slice(last), __tr: true });
-    return nodes;
-}
-function decorate(row, input) {
-    const m = row && row.message;
-    if (!m)
-        return;
-    const rowType = input && input.rowType !== undefined ? input.rowType : row.rowType;
-    if (rowType !== 1)
-        return;
-    const tr = translations.get(m.id);
-    const ours = m.__trOut && m.content === m.__trOut;
-    if (!tr) {
-        if (ours)
-            m.content = m.__trBase;
-        else if (Array.isArray(m.content)) {
-            const clean = stripOurs(m.content);
-            if (clean.length !== m.content.length)
-                m.content = clean;
+      } catch (_) {}
+      ask("Capture mode", "Choose which new messages to save.", [
+        { text: "All new messages", onPress: () => select("expanded") },
+        { text: "Loaded messages", onPress: () => select("loaded") }
+      ]);
+    };
+    const editRecentMessageLimit = () => {
+      const saveLimit = (value) => {
+        const count = Number(String(value || "").trim());
+        if (!Number.isInteger(count) || count < MIN_RECENT_MESSAGES || count > MAX_RECENT_MESSAGES) {
+          ask("Invalid message limit", "Enter a whole number from " + MIN_RECENT_MESSAGES + " to " + MAX_RECENT_MESSAGES + ".", [{ text: "OK" }]);
+          return;
         }
-        return;
+        cfg().maxCachedMessages = count;
+        trimRecentMessages();
+        refreshUI();
+      };
+      try {
+        openNativeInputAlert({ id: "gpl-cache-limit", title: "Maximum cached messages", content: "Messages received by Discord · approx. 8 MiB cache budget", initialValue: recentMessageLimit(), keyboardType: "number-pad", onSave: saveLimit });
+      } catch (_) { toast("Could not open cache limit settings"); }
+    };
+    const cycleRetention = () => {
+      const cur = cfg().retentionDays || 0;
+      cfg().retentionDays = cur === 0 ? 7 : cur === 7 ? 30 : 0;
+      if (purge()) save();
+      refreshUI();
+    };
+
+
+    let content;
+    if (screen === "history") {
+      content = [
+        Btn("back", "< Back", () => { setScreen("main"); setLimit(PAGE); }),
+        Title("title", "Ghost pings (" + pings.length + ")"),
+      ];
+      if (pings.length) {
+        content.push(Btn("clear", "Clear history", () => {
+          ask("Clear ghost ping history?", "This removes every saved ghost ping.", [
+            { text: "Clear", style: "destructive", onPress: () => { pings = []; save(); refreshUI(); } },
+          ]);
+        }, RED));
+      } else {
+        content.push(Empty("empty", "No ghost pings yet."));
+      }
+      pings.slice(0, limit).forEach(function (entry) {
+        // Keep each row's identity and action bound to the same immutable
+        // values. This mirrors the isolated row callbacks used by AML logs.
+        const pingId = String(entry.id);
+        const channelId = entry.c == null ? null : String(entry.c);
+        const guildId = entry.g == null ? null : String(entry.g);
+        const kind = KINDS[entry.k] || "Ghost ping";
+        const authorName = String(entry.an || "Unknown");
+        const messageText = String(entry.t || "");
+        const occurredAt = Number(entry.at) || 0;
+        const rowKey = "ghost-history-" + pingId;
+        content.push(PressRow(rowKey, clip(messageText, 200) || "(no text)",
+          kind + " · " + authorName + " · " + channelLabel(channelId, guildId) + " · " + fmtTime(occurredAt), function () {
+            ask(kind + " from " + authorName, clip(messageText, 600), [
+              { text: "Jump to message", onPress: () => jumpTo(channelId, guildId, pingId, settingsNavigation) },
+              { text: "Remove", style: "destructive", onPress: () => { removePing(pingId); refreshUI(); } },
+            ]);
+          }));
+      });
+      if (pings.length > limit) content.push(Btn("more", "Show more", () => setLimit(limit + PAGE)));
+    } else {
+      content = [
+        Section("Detection"),
+        Switch("enabled", "Ghost ping logger", "Notify when a message that pinged you gets deleted"),
+        Switch("pingMentions", "Mentions", "Messages that mentioned you"),
+        Switch("trackEveryone", "Track @everyone", "Include messages that mention everyone in this server.", (v) => { cfg().trackEveryone = v; refreshUI(); }),
+        Switch("pingReplies", "Replies", "Replies to your messages"),
+        Switch("skipBots", "Ignore bots", "Do not report deleted bot messages"),
+        Section("Alerts"),
+        Switch("showToast", "Show ghost ping alert", "Show a modal with Jump to message and Dismiss"),
+        Switch("redName", "Red usernames on ghost pings", "Color the sender name with the ghost ping message", (v) => { cfg().redName = v; refreshGhostRows(); refreshUI(); }),
+        Section("Message capture"),
+        PressRow("capture-mode", "Capture mode", captureModeDescription(), openCaptureModeMenu, captureModeLabel()),
+        Switch("rememberReceivedMessages", "Remember new messages", "Save new messages received by Discord on this device across restarts.", (v) => {
+          cfg().rememberReceivedMessages = v;
+          if (!v) { recentArchiveIds.clear(); cfg().receivedMessages = []; recentArchiveDirty = false; if (recentArchiveTimer) { clearTimeout(recentArchiveTimer); recentArchiveTimer = null; } }
+          else scheduleRecentArchiveSave();
+          refreshUI();
+        }),
+        PressRow("test-capture", "Test message capture", "Count new messages since this plugin started", showCaptureTest, ">"),
+        PressRow("cache-limit", "Maximum cached messages", "Delivered messages only · capped recent cache", editRecentMessageLimit, String(recentMessageLimit())),
+        Section("History"),
+        PressRow("nav", "Ghost ping history", pings.length + " saved", () => { setLimit(PAGE); setScreen("history"); }, ">"),
+        PressRow("retention", "Keep history for", "Older entries are removed automatically", cycleRetention, retentionLabel()),
+        Btn("test", "Send a test ghost ping", () => { addTestPing(); refreshUI(); }),
+      ];
     }
-    const base = ours ? m.__trBase : Array.isArray(m.content) ? stripOurs(m.content) : null;
-    if (!Array.isArray(base))
-        return;
-    const pc = RN.processColor;
-    const color = pc ? pc(translationColor()) : null;
-    const text = translatedNodes(tr.text);
-    let out;
-    const rawSource = String(tr.src || "").toLowerCase();
-    const sourceCode = rawSource === "zh-cn" ? "zh-CN" : rawSource === "zh-tw" ? "zh-TW" : rawSource.split("-")[0];
-    const sourceHint = qt.showSourceLanguage && sourceCode && sourceCode !== "auto"
-        ? [{ type: "text", content: "\n" + langName(sourceCode) + " → " + langName(String(tr.tl || "")) + "\n", color: palette().sub, __tr: true }]
-        : [];
-    const immersive = tr.autoIncoming ? qt.autoIncomingImmersive : (tr.immersive ?? qt.immersive);
-    if (immersive)
-        out = base.concat([{ type: "text", content: "\n", __tr: true }], sourceHint, paint(text, color));
-    else
-        out = sourceHint.concat(paint(text, color));
-    if (!out.length)
-        return;
-    m.__trBase = base;
-    m.__trOut = out;
-    m.content = out;
-}
-function onRenderError() {
-    renderErrors++;
-    if (renderErrors >= 3 && renderUnpatch) {
-        try {
-            renderUnpatch();
-        }
-        catch (_) { /* ignore */ }
-        renderUnpatch = null;
-        toast("Quick Translate: message styling disabled after repeated errors");
-    }
-}
-function patchRender() {
-    const RowManager = safe(() => findByName("RowManager"), null);
-    if (!RowManager || !RowManager.prototype || typeof RowManager.prototype.generate !== "function") {
-        toast("Quick Translate: could not find the message renderer");
-        return;
-    }
-    renderUnpatch = after("generate", RowManager.prototype, (args, ret) => {
-        try {
-            decorate(ret, args[0]);
-        }
-        catch (_) {
-            onRenderError();
-        }
-    });
-}
-/* ------------------------------------------------------------------ */
-/* message long-press menu                                             */
-/* ------------------------------------------------------------------ */
-function messagePlan(message) {
-    if (!message || !message.id || typeof message.content !== "string" || !message.content.trim())
-        return null;
-    const plan = [];
-    if (translations.has(message.id)) {
-        plan.push({ key: "qt-original", label: "Show original message", press: () => showOriginal(message) });
-    }
-    else {
-        plan.push({ key: "qt-translate", label: "Translate to " + langName(qt.targetIn), press: () => translateMessage(message, qt.targetIn) });
-    }
-    const channelId = String(message.channel_id || message.channelId || currentChannelId() || "");
-    if (channelId)
-        plan.push({ key: "qt-select-messages", label: "Bulk translate…", press: () => openBulkSelection(message) });
-    plan.push({
-        key: "qt-translate-to",
-        label: "Translate to...",
-        press: () => showLanguagePicker("Translate to", (code) => translateMessage(message, code)),
-    });
-    const translated = translations.get(message.id);
-    if (translated?.text)
-        plan.push({ key: "qt-copy-translation", label: "Copy translation", press: () => copyText(translated.text) });
-    return plan;
-}
-function hideLanguageSheet() {
+    const buildLabel = Text({ key: "build", style: { color: C.sub, fontSize: 12, textAlign: "center", marginTop: 1 } }, "Ghost Ping Logger " + BUILD);
+    const header = screen === "main" ? [Text({ key: "header-title", style: { color: C.text, fontSize: 25, fontWeight: "800", marginBottom: 5 } }, "Ghost Ping Logger"), Text({ key: "header-subtitle", style: { color: C.sub, fontSize: 14, marginBottom: 20 } }, "Review deleted pings and message capture")] : [];
+    return h(RN.Animated.View, { style: { flex: 1, opacity: screenProgress, transform: [{ translateY: screenProgress.interpolate({ inputRange: [0, 1], outputRange: [8, 0] }) }] } }, h(RN.ScrollView, { key: screen, style: { flex: 1 }, keyboardShouldPersistTaps: "handled", contentContainerStyle: { padding: 16, paddingBottom: 42 } }, ...header, ...compose(content), buildLabel));
+  }
+
+  function onLoad() {
+    receivedThisSession = 0;
+    receivedDMsThisSession = 0;
+    receivedChannelsThisSession.clear();
+    const s = cfg();
+    const defaults = { enabled: true, pingMentions: true, trackEveryone: false, pingReplies: true, skipBots: true, showToast: true, retentionDays: 0, captureMode: "expanded", maxCachedMessages: DEFAULT_RECENT_MESSAGES, rememberReceivedMessages: true, redName: true };
+    for (const k of Object.keys(defaults)) if (s[k] === undefined) s[k] = defaults[k];
+    if (s.captureMode !== "loaded" && s.captureMode !== "expanded") s.captureMode = "expanded";
+
+    if (!loadStores()) { toast("Ghost Ping Logger: required Discord modules not found"); return; }
+    clearRecentMessages();
+    restoreRecentArchive();
+    retainedPings.clear();
+    try { pings = Array.isArray(s.pings) ? JSON.parse(JSON.stringify(s.pings)) : []; } catch (_) { pings = []; }
+    if (purge()) save();
+
+    try { unpatches.push(patcher.before("dispatch", FluxDispatcher, hookDispatch)); } catch (_) { return; }
+    try { renderUnpatch = patchRender(); } catch (_) {}
     try {
-        findByProps("openLazy", "hideActionSheet").hideActionSheet();
-    }
-    catch (_) { /* ignore */ }
-}
-function showLanguagePicker(title, onSelect) {
-    const sheets = safe(() => findByProps("showSimpleActionSheet"), null);
-    if (!sheets || typeof sheets.showSimpleActionSheet !== "function") {
-        toast("Could not open the language list");
-        return;
-    }
-    const favorites = (qt.favLangs || []).filter((code) => LANG_NAME.has(code));
-    const showSheet = (languages, key, includeMore) => {
-        const options = languages.map(([code, name]) => ({
-            label: name,
-            onPress: () => {
-                hideLanguageSheet();
-                onSelect(code);
-            },
-        }));
-        if (includeMore)
-            options.push({
-                label: "Show more",
-                onPress: () => {
-                    hideLanguageSheet();
-                    setTimeout(() => showSheet(LANGS, key + "All", false), 300);
-                },
-            });
-        sheets.showSimpleActionSheet({ key, header: { title }, options });
-    };
-    const favoriteLanguages = favorites.map((code) => [code, langName(code)]);
-    setTimeout(() => showSheet(favorites.length ? favoriteLanguages : LANGS, "QTTranslateTo", favorites.length > 0), 300);
-}
-function addRows(tree, plan, lazySheet) {
-    const container = findInReactTree(tree, (x) => Array.isArray(x) && x[0]?.type?.name === "ActionSheetRowGroup");
-    if (!container || !container[1]) {
-        console.log("[QuickTranslate] could not find the action sheet group");
-        return;
-    }
-    const group = container[1];
-    const children = group.props?.children;
-    if (!Array.isArray(children) || !children[0])
-        return;
-    if (children.some((c) => typeof c?.key === "string" && c.key.startsWith("qt-")))
-        return;
-    const tpl = children[0];
-    const Row = tpl.type;
-    const iconId = findAssetId("LanguageIcon");
-    const tplIcon = tpl.props?.icon;
-    const icon = tplIcon
-        ? {
-            $$typeof: tplIcon.$$typeof,
-            type: tplIcon.type,
-            key: null,
-            ref: null,
-            props: {
-                IconComponent: () => React.createElement(RN.Image, {
-                    resizeMode: "cover",
-                    style: { width: 24, height: 24, tintColor: palette().text },
-                    source: iconId,
-                }),
-            },
-        }
-        : undefined;
-    const rows = plan.map(item => React.createElement(Row, {
-        key: item.key,
-        label: item.label,
-        icon,
-        onPress: () => {
-            try {
-                lazySheet.hideActionSheet();
-            }
-            catch (_) { /* ignore */ }
-            item.press();
-        },
-    }));
-    const copyIndex = children.findIndex((c) => c?.props?.label?.toUpperCase?.()?.includes("COPY") || c?.props?.message?.toUpperCase?.()?.includes("COPY"));
-    if (copyIndex !== -1)
-        children.splice(copyIndex, 0, ...rows);
-    else
-        children.push(...rows);
-}
-function patchActionSheet() {
-    const lazySheet = findByProps("openLazy", "hideActionSheet");
-    if (!lazySheet)
-        return;
-    unpatches.push(before("openLazy", lazySheet, ([component, key, ctx]) => {
-        try {
-            if (key !== "MessageLongPressActionSheet" || !component || typeof component.then !== "function")
-                return;
-            const plan = messagePlan(ctx && ctx.message);
-            if (!plan)
-                return;
-            component.then((instance) => {
-                const un = after("default", instance, (_, tree) => {
-                    React.useEffect(() => () => { un(); }, []);
-                    try {
-                        addRows(tree, plan, lazySheet);
-                    }
-                    catch (e) {
-                        console.error(e);
-                    }
-                });
-            });
-        }
-        catch (_) { /* ignore */ }
-    }));
-}
-/* ------------------------------------------------------------------ */
-/* chat bar button                                                     */
-/* ------------------------------------------------------------------ */
-function TranslateButton(props) {
-    const h = React.createElement;
-    const settings = useQuickTranslate();
-    const [busy, setBusy] = React.useState(false);
-    const [panelOpen, setPanelOpen] = React.useState(false);
-    const [panelPage, setPanelPage] = React.useState("main");
-    const [source, setSource] = React.useState(getChatLanguages().sourceOut || "auto");
-    const [target, setTarget] = React.useState(getChatLanguages().targetOut || "en");
-    const [query, setQuery] = React.useState("");
-    const didLongPress = React.useRef(false);
-    const pressTimer = React.useRef(null);
-    const sheetProgress = React.useRef(new RN.Animated.Value(0)).current;
-    const backdropProgress = React.useRef(new RN.Animated.Value(0)).current;
-    const closingPanel = React.useRef(false);
-    const buttonScale = React.useRef(new RN.Animated.Value(1)).current;
-    const [, tick] = React.useState(0);
-    React.useEffect(() => {
-        const f = () => tick((x) => x + 1);
-        buttonListeners.add(f);
-        return () => { buttonListeners.delete(f); if (pressTimer.current)
-            clearTimeout(pressTimer.current); };
-    }, []);
-    React.useEffect(() => {
-        if (!panelOpen)
-            return;
-        closingPanel.current = false;
-        sheetProgress.setValue(0);
-        backdropProgress.setValue(0);
-        RN.Animated.parallel([
-            RN.Animated.timing(sheetProgress, { toValue: 1, duration: 260, easing: RN.Easing.out(RN.Easing.cubic), useNativeDriver: true }),
-            RN.Animated.timing(backdropProgress, { toValue: 1, duration: 220, useNativeDriver: true }),
-        ]).start();
-    }, [panelOpen]);
-    if (settings.showButton === false)
-        return null;
-    if (props.position === "actions" && settings.anchor !== "actions")
-        return null;
-    if (props.position === "send" && settings.anchor !== "send" && !(armed && settings.draftBeforeSend !== false))
-        return null;
-    const run = (tl, sl) => {
-        if (busy)
-            return Promise.resolve(false);
-        setBusy(true);
-        let p;
-        try {
-            p = translateCurrentText(tl, sl);
-        }
-        catch (_) {
-            p = Promise.resolve(false);
-        }
-        return p.then((ok) => { setBusy(false); return ok; }, () => { setBusy(false); return false; });
-    };
-    const iconId = findAssetId("LanguageIcon");
-    const C = palette();
-    const translateSendMode = props.position === "send" && !!armed && settings.draftBeforeSend !== false;
-    const highlightedTranslate = translateSendMode && settings.highlightDraftButton !== false;
-    const icon = iconId
-        ? h(RN.Image, { source: iconId, style: { width: 23, height: 23, tintColor: highlightedTranslate ? "#FFFFFF" : armed ? ACCENT : C.sub } })
-        : h(RN.Text, { style: { fontSize: 20, textAlign: "center", color: highlightedTranslate ? "#FFFFFF" : armed ? ACCENT : C.sub } }, "\uD83C\uDF10");
-    const onPress = () => {
-        if (didLongPress.current) {
-            didLongPress.current = false;
-            return;
-        }
-        if (armed && props.position === "send" && settings.draftBeforeSend !== false) {
-            const job = armed;
-            run(job.tl, job.sl).then(ok => {
-                if (ok) {
-                    armed = job.oneShot ? (job.resume || null) : null;
-                    notifyButton();
-                }
-            });
-            return;
-        }
-        if (armed) {
-            armed = null;
-            notifyButton();
-            toast("Translation turned off");
-            return;
-        }
-        const preferences = getChatLanguages();
-        armed = { tl: preferences.targetOut || "en", sl: preferences.sourceOut || "auto" };
-        notifyButton();
-        toast(settings.keepArmed
-            ? "Translation is active until you turn it off"
-            : "Translation will apply to your next message");
-    };
-    const openPanel = () => {
-        didLongPress.current = true;
-        const preferences = getChatLanguages();
-        setSource(preferences.sourceOut || "auto");
-        setTarget(preferences.targetOut || "en");
-        setQuery("");
-        setPanelPage("main");
-        closingPanel.current = false;
-        setPanelOpen(true);
-    };
-    const startPress = () => {
-        didLongPress.current = false;
-        RN.Animated.timing(buttonScale, { toValue: 0.92, duration: 75, useNativeDriver: true }).start();
-        if (pressTimer.current)
-            clearTimeout(pressTimer.current);
-        pressTimer.current = setTimeout(() => {
-            pressTimer.current = null;
-            openPanel();
-        }, 450);
-    };
-    const finishPress = () => {
-        RN.Animated.spring(buttonScale, { toValue: 1, speed: 24, bounciness: 4, useNativeDriver: true }).start();
-        if (pressTimer.current) {
-            clearTimeout(pressTimer.current);
-            pressTimer.current = null;
-        }
-        if (!didLongPress.current)
-            onPress();
-        didLongPress.current = false;
-    };
-    const cancelPress = () => {
-        RN.Animated.spring(buttonScale, { toValue: 1, speed: 24, bounciness: 4, useNativeDriver: true }).start();
-        if (pressTimer.current)
-            clearTimeout(pressTimer.current);
-        pressTimer.current = null;
-        didLongPress.current = false;
-    };
-    const closePanel = () => {
-        if (closingPanel.current)
-            return;
-        closingPanel.current = true;
-        RN.Animated.parallel([
-            RN.Animated.timing(sheetProgress, { toValue: 0, duration: 220, easing: RN.Easing.in(RN.Easing.cubic), useNativeDriver: true }),
-            RN.Animated.timing(backdropProgress, { toValue: 0, duration: 180, useNativeDriver: true }),
-        ]).start(({ finished }) => {
-            if (finished) {
-                setPanelOpen(false);
-                setPanelPage("main");
-                setQuery("");
-            }
-            closingPanel.current = false;
-        });
-    };
-    const sheetTravel = Math.max(600, safe(() => RN.Dimensions.get("window").height, 800));
-    const sheetPanResponder = React.useRef(null);
-    if (!sheetPanResponder.current) {
-        sheetPanResponder.current = RN.PanResponder.create({
-            onStartShouldSetPanResponder: () => false,
-            onMoveShouldSetPanResponder: (_, gesture) => gesture.dy > 4 && Math.abs(gesture.dy) > Math.abs(gesture.dx) * 1.15,
-            onMoveShouldSetPanResponderCapture: (_, gesture) => gesture.dy > 4 && Math.abs(gesture.dy) > Math.abs(gesture.dx) * 1.15,
-            onShouldBlockNativeResponder: () => true,
-            onPanResponderMove: (_, gesture) => {
-                const progress = Math.max(0, Math.min(1, 1 - Math.max(0, gesture.dy) / sheetTravel));
-                sheetProgress.setValue(progress);
-                backdropProgress.setValue(progress);
-            },
-            onPanResponderRelease: (_, gesture) => {
-                if (gesture.dy > Math.max(72, sheetTravel * 0.10) || gesture.vy > 0.5) {
-                    closePanel();
-                    return;
-                }
-                RN.Animated.parallel([
-                    RN.Animated.spring(sheetProgress, { toValue: 1, speed: 20, bounciness: 0, useNativeDriver: true }),
-                    RN.Animated.timing(backdropProgress, { toValue: 1, duration: 140, useNativeDriver: true }),
-                ]).start();
-            },
-            onPanResponderTerminate: () => {
-                RN.Animated.parallel([
-                    RN.Animated.spring(sheetProgress, { toValue: 1, speed: 20, bounciness: 0, useNativeDriver: true }),
-                    RN.Animated.timing(backdropProgress, { toValue: 1, duration: 140, useNativeDriver: true }),
-                ]).start();
-            },
-            onPanResponderTerminationRequest: () => false,
-        });
-    }
-    const favorites = (settings.favLangs || []).filter((code) => LANG_NAME.has(code));
-    const paletteNow = palette();
-    const sourceLanguages = [["auto", "Auto-detect"], ...LANGS];
-    const selectTargetLanguage = (code) => {
-        setTarget(code);
-    };
-    const confirmTargetLanguage = () => {
-        setPanelPage("main");
-        setQuery("");
-    };
-    const activateOnce = () => {
-        const resume = armed?.oneShot ? armed.resume || null : armed;
-        armed = { tl: target, sl: source, oneShot: true, resume };
-        notifyButton();
-        closePanel();
-        toast("Translate once is ready. Translate the draft to " + langName(target) + "; your usual language will return after.");
-    };
-    const setPermanentLanguage = () => {
-        const channelId = currentChannelId();
-        saveChatLanguages(channelId, { targetOut: target });
-        if (armed?.oneShot)
-            armed = { ...armed, resume: { tl: target, sl: source } };
-        else if (armed)
-            armed = { tl: target, sl: source };
-        notifyButton();
-        closePanel();
-        toast(langName(target) + " is now the usual language for this chat");
-    };
-    const languageOptions = (panelPage === "source" ? sourceLanguages : LANGS)
-        .filter(([code, name]) => !query.trim() || name.toLowerCase().includes(query.trim().toLowerCase()) || code.toLowerCase().includes(query.trim().toLowerCase()));
-    const panelBody = panelPage === "main"
-        ? [
-            h(RN.Text, { key: "title", style: { color: paletteNow.text, fontSize: 22, fontWeight: "700", marginBottom: 4 } }, "Translate draft"),
-            h(RN.Text, { key: "hint", style: { color: paletteNow.sub, fontSize: 14, marginBottom: 16 } }, "Translate this draft once. Your chat’s default language stays unchanged."),
-            h(CustomSection, { key: "languages", title: "Languages", compact: true }, h(CustomRow, { title: "Translate from", subtitle: languageLabel(source), icon: "↗", onPress: () => { setQuery(""); setPanelPage("source"); }, trailing: h(RN.Text, { style: { color: paletteNow.sub, fontSize: 20 } }, "›") }), h(CustomRow, { title: "Translate to", subtitle: languageLabel(target), icon: "↙", last: true, onPress: () => { setQuery(""); setPanelPage("target"); }, trailing: h(RN.Text, { style: { color: paletteNow.sub, fontSize: 20 } }, "›") })),
-            favorites.length ? h(RN.View, { key: "favorites", style: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", marginTop: 8, marginBottom: 4 } }, ...favorites.map((code) => h(RN.Pressable, {
-                key: code,
-                onPress: () => selectTargetLanguage(code),
-                accessibilityRole: "button",
-                accessibilityLabel: "Translate to " + langName(code),
-                accessibilityState: { selected: code === target },
-                style: { minHeight: 40, paddingHorizontal: 13, paddingVertical: 8, borderRadius: 20, marginRight: 7, marginBottom: 7, alignItems: "center", justifyContent: "center", backgroundColor: code === target ? paletteNow.blurple : paletteNow.chip },
-            }, h(RN.Text, { numberOfLines: 1, adjustsFontSizeToFit: true, style: { color: paletteNow.text, fontSize: 13, fontWeight: "600" } }, languageLabel(code))))) : null,
-            h(CustomSection, { key: "once-section", title: "Translate once", compact: true }, h(RN.Text, { style: { color: paletteNow.sub, fontSize: 12, lineHeight: 16, paddingHorizontal: 14, paddingTop: 4 } }, "Arms the Translate button for one draft. After it translates, your usual language is restored."), h(RN.View, { style: { paddingHorizontal: 12, paddingBottom: 8 } }, h(CustomAction, { title: busy ? "Translating…" : "Activate once · " + langName(target), disabled: busy, onPress: activateOnce }))),
-            h(CustomSection, { key: "permanent-section", title: "Permanent language", compact: true }, h(RN.Text, { style: { color: paletteNow.sub, fontSize: 12, lineHeight: 16, paddingHorizontal: 14, paddingTop: 4 } }, "Changes the usual target for this chat until you choose another language."), h(RN.View, { style: { paddingHorizontal: 12, paddingBottom: 8 } }, h(CustomAction, { title: "Set " + langName(target) + " as usual", secondary: true, onPress: setPermanentLanguage }))),
-            lastOriginal != null ? h(CustomAction, { key: "restore", title: "Restore original text", secondary: true, onPress: () => { closePanel(); restoreOriginal(); } }) : null,
-            armed ? h(CustomAction, { key: "disable", title: "Turn off Translate", secondary: true, onPress: () => { armed = null; notifyButton(); closePanel(); } }) : null,
-            
-        ]
-        : [
-            h(CustomAction, { key: "back", title: "‹  Back", secondary: true, onPress: () => { setPanelPage("main"); setQuery(""); } }),
-            h(CustomInput, { key: "search", style: { marginVertical: 12 }, value: query, placeholder: "Search language", onChangeText: setQuery, autoCorrect: false }),
-            h(RN.ScrollView, { key: "list", style: { maxHeight: 360 }, keyboardShouldPersistTaps: "handled" }, h(CustomSection, { title: panelPage === "source" ? "Translate from" : "Translate to" }, ...languageOptions.map(([code, label], index) => h(CustomRow, { key: code, title: languageLabel(code, label), subtitle: code,
-                trailing: (panelPage === "source" ? source : target) === code ? h(RN.Text, { style: { color: paletteNow.blurple, fontWeight: "700" } }, "✓") : null,
-                last: index === languageOptions.length - 1,
-                onPress: () => {
-                    if (panelPage === "source") {
-                        setSource(code);
-                        saveChatLanguages(currentChannelId(), { sourceOut: code });
-                    }
-                    else {
-                        selectTargetLanguage(code);
-                        return;
-                    }
-                    setPanelPage("main");
-                    setQuery("");
-                } })))),
-            panelPage === "target" ? h(CustomAction, { key: "confirm-target", title: "Confirm " + langName(target), onPress: confirmTargetLanguage }) : null,
-        ];
-    return h(RN.View, { pointerEvents: "box-none", collapsable: false, style: { width: 40, height: 40, marginRight: 4, alignSelf: "center", flexShrink: 0 } }, h(RN.Animated.View, {
-        onStartShouldSetResponder: () => !busy,
-        onResponderTerminationRequest: () => false,
-        onResponderGrant: startPress,
-        onResponderRelease: finishPress,
-        onResponderTerminate: cancelPress,
-        hitSlop: 10,
-        pressRetentionOffset: { top: 18, bottom: 18, left: 18, right: 18 },
-        pointerEvents: "auto",
-        collapsable: false,
-        accessibilityRole: "button",
-        accessibilityLabel: translateSendMode ? "Translate draft" : "Translate message",
-        accessibilityHint: "Tap to activate or translate the draft; hold for language and draft options",
-        accessibilityActions: [{ name: "activate", label: "Translate" }],
-        onAccessibilityTap: onPress,
-        style: { width: 40, height: 40, borderRadius: 13, backgroundColor: highlightedTranslate ? paletteNow.blurple : "transparent", alignItems: "center", justifyContent: "center", opacity: busy ? 0.5 : 1, transform: [{ scale: buttonScale }] },
-    }, icon), panelOpen ? h(RN.Modal, { visible: true, transparent: true, animationType: "none", onRequestClose: closePanel }, h(RN.View, { style: { flex: 1, justifyContent: "flex-end" } }, h(RN.Animated.View, { pointerEvents: "box-none", style: { position: "absolute", top: 0, bottom: 0, left: 0, right: 0, backgroundColor: "rgba(0,0,0,0.52)", opacity: backdropProgress } }, h(RN.Pressable, { style: { flex: 1 }, onPress: closePanel })), h(RN.Animated.View, {
-        style: { maxHeight: "88%", backgroundColor: paletteNow.bg, borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingHorizontal: 16, paddingTop: 14, paddingBottom: 28,
-            transform: [{ translateY: sheetProgress.interpolate({ inputRange: [0, 1], outputRange: [sheetTravel, 0] }) }] },
-    }, h(RN.View, { ...sheetPanResponder.panHandlers, accessibilityLabel: "Drag down to close translate menu", accessibilityHint: "Swipe down to dismiss", style: { height: 44, marginBottom: 10, flexDirection: "row", alignItems: "center", justifyContent: "center" } }, h(RN.View, { style: { width: 72, height: 44, alignItems: "center", justifyContent: "center" } }, h(RN.View, { style: { width: 38, height: 5, borderRadius: 3, backgroundColor: paletteNow.off } })), h(RN.Pressable, { onPress: closePanel, accessibilityRole: "button", accessibilityLabel: "Close translate menu", hitSlop: 10, style: { position: "absolute", top: 0, right: 0, width: 38, height: 38, borderRadius: 19, backgroundColor: paletteNow.chip, alignItems: "center", justifyContent: "center" } }, h(RN.Text, { style: { color: paletteNow.text, fontSize: 24, lineHeight: 28, fontWeight: "500" } }, String.fromCharCode(215)))), panelPage === "main" ? h(RN.ScrollView, { keyboardShouldPersistTaps: "handled", showsVerticalScrollIndicator: false, style: { flexShrink: 1 }, contentContainerStyle: { paddingBottom: 8 } }, ...panelBody) : h(RN.ScrollView, { keyboardShouldPersistTaps: "handled" }, ...panelBody)))) : null, bulkSelectionRequest ? h(BulkMessageSelector, { key: bulkSelectionRequest.nonce, request: bulkSelectionRequest, onClose: () => { bulkSelectionRequest = null; notifyButton(); } }) : null);
-}
-function patchChatButton() {
-    const h = React.createElement;
-    const actions = findByTypeDisplayName("ChatInputActions");
-    const rightActions = findByTypeDisplayName("ChatInputRightActions");
-    const sendButton = findByTypeDisplayName("ChatInputSendButton");
-    for (const component of [actions, rightActions]) {
-        if (!component?.type)
-            continue;
-        unpatches.push(before("render", component.type, ([props]) => {
-            if (!props || !qt.hideGiftButton)
-                return;
-            props.shouldShowGiftButton = false;
-        }));
-    }
-    if (actions?.type)
-        unpatches.push(after("render", actions.type, (_, ret) => {
-            if (!ret)
-                return ret;
-            return h(RN.View, { pointerEvents: "box-none", collapsable: false, style: { flexDirection: "row", alignItems: "center", overflow: "visible" } }, ret, h(TranslateButton, { key: "qt-button-actions", position: "actions" }));
-        }));
-    if (rightActions?.type)
-        unpatches.push(after("render", rightActions.type, (_, ret) => {
-            if (!React.isValidElement(ret))
-                return ret;
-            return React.cloneElement(ret, { style: [ret.props?.style, { alignItems: "center", alignSelf: "center" }] });
-        }));
-    if (sendButton?.type)
-        unpatches.push(after("render", sendButton.type, (_, ret) => {
-            if (!ret)
-                return ret;
-            return h(ComposerSendSlot, { button: h(TranslateButton, { key: "qt-button-send", position: "send" }), children: ret });
-        }));
-}
-function ComposerSendSlot(props) {
-    const h = React.createElement;
-    const settings = useQuickTranslate();
-    const [active, setActive] = React.useState(!!armed);
-    React.useEffect(() => {
-        const refresh = () => setActive(!!armed);
-        buttonListeners.add(refresh);
-        return () => { buttonListeners.delete(refresh); };
-    }, []);
-    const replaceSend = active && settings.showButton !== false && settings.draftBeforeSend !== false;
-    const showTranslate = settings.anchor === "send" || replaceSend;
-    if (!showTranslate)
-        return props.children;
-    if (replaceSend)
-        return h(RN.View, { pointerEvents: "box-none", collapsable: false, style: { position: "relative", alignItems: "center", justifyContent: "center", alignSelf: "center" } }, h(RN.View, { pointerEvents: "none", accessible: false, accessibilityElementsHidden: true, importantForAccessibility: "no-hide-descendants", style: { opacity: 0 } }, props.children), h(RN.View, { pointerEvents: "box-none", style: { position: "absolute", top: 0, bottom: 0, left: 0, right: 0, alignItems: "center", justifyContent: "center" } }, props.button));
-    return h(RN.View, { pointerEvents: "box-none", style: { flexDirection: "row", alignItems: "center", alignSelf: "center" } }, props.button, props.children);
-}
-function LangPicker(props) {
-    const h = React.createElement;
-    const settings = useQuickTranslate();
-    const navigation = NavigationNative.useNavigation();
-    const [query, setQuery] = React.useState("");
-    const q = query.trim().toLowerCase();
-    const base = props.field === "sourceOut" ? [["auto", "Auto-detect"], ...LANGS] : LANGS;
-    const list = base.filter(([code, name]) => !q || name.toLowerCase().includes(q) || code.toLowerCase().includes(q));
-    const choose = (code) => {
-        settings.updateSettings({ [props.field]: code });
-        navigation.goBack();
-    };
-    return h(RN.ScrollView, { style: { flex: 1 }, keyboardShouldPersistTaps: "handled", contentContainerStyle: { padding: 16, paddingBottom: 40 } }, h(CustomInput, { value: query, placeholder: "Search language", onChangeText: setQuery, autoCorrect: false, style: { marginBottom: 18 } }), h(CustomSection, { title: "Languages" }, ...list.map(([code, label], index) => h(CustomRow, { key: code, title: languageLabel(code, label), subtitle: code, last: index === list.length - 1,
-        trailing: settings[props.field] === code ? h(RN.Text, { style: { color: palette().blurple, fontWeight: "700", fontSize: 18 } }, "✓") : null,
-        onPress: () => choose(code) }))));
-}
-function FavPicker() {
-    const h = React.createElement;
-    const settings = useQuickTranslate();
-    const [query, setQuery] = React.useState("");
-    const q = query.trim().toLowerCase();
-    const favs = settings.favLangs || [];
-    const list = LANGS.filter(([c, n]) => !q || n.toLowerCase().includes(q) || c.toLowerCase().includes(q));
-    return h(RN.ScrollView, { style: { flex: 1 }, keyboardShouldPersistTaps: "handled", contentContainerStyle: { padding: 16, paddingBottom: 40 } }, h(CustomInput, { value: query, placeholder: "Search language", onChangeText: setQuery, autoCorrect: false, style: { marginBottom: 18 } }), h(RN.Text, { style: { color: palette().sub, marginBottom: 12, fontSize: 14 } }, favs.length + " of " + MAX_FAVS + " quick languages selected"), h(CustomSection, { title: "Choose quick languages" }, ...list.map(([code, label], index) => {
-        const on = favs.includes(code);
-        return h(CustomRow, { key: code, title: languageLabel(code, label), subtitle: code, last: index === list.length - 1,
-            trailing: h(RN.View, { style: { width: 24, height: 24, borderRadius: 7, borderWidth: 1.5, borderColor: on ? palette().blurple : palette().off, backgroundColor: on ? palette().blurple : "transparent", alignItems: "center", justifyContent: "center" } }, on ? h(RN.Text, { style: { color: "#FFFFFF", fontWeight: "800" } }, "✓") : null),
-            onPress: () => {
-                if (on)
-                    settings.updateSettings({ favLangs: favs.filter(x => x !== code) });
-                else if (favs.length < MAX_FAVS)
-                    settings.updateSettings({ favLangs: favs.concat([code]) });
-                else
-                    toast("You can pick up to " + MAX_FAVS);
-            } });
-    })));
-}
-function ColorPicker() {
-    const h = React.createElement;
-    const settings = useQuickTranslate();
-    const navigation = NavigationNative.useNavigation();
-    const colors = palette();
-    const current = translationColor();
-    const select = (hex) => { settings.updateSettings({ translationColor: hex }); refreshTranslated(); navigation.goBack(); };
-    return h(RN.ScrollView,{style:{flex:1},contentContainerStyle:{padding:16,paddingBottom:40}},
-      h(RN.Text,{style:{color:colors.text,fontSize:20,fontWeight:"700",marginBottom:6}},"Translation color"),
-      h(RN.Text,{style:{color:colors.sub,fontSize:14,marginBottom:8}},"Choose a color preset. Your choice saves automatically."),
-      h(RN.Text,{style:{color:colors.sub,fontSize:13,marginBottom:16}},"Current color: "+current),
-      h(CustomSection,{title:"Color presets"},...COLOR_PRESETS.map(([label,hex],index)=>h(CustomRow,{key:hex,title:label,subtitle:hex,last:index===COLOR_PRESETS.length-1,trailing:h(RN.View,{style:{flexDirection:"row",alignItems:"center",gap:10,marginRight:6}},h(RN.View,{style:{width:20,height:20,borderRadius:10,backgroundColor:hex}}),current===hex?h(RN.Text,{style:{color:colors.blurple,fontWeight:"800",width:18,textAlign:"center"}},"✓"):h(RN.View,{style:{width:18}})),onPress:()=>select(hex)}))),
-      h(CustomAction,{title:"Use default",secondary:true,onPress:()=>select(ACCENT)}));
-}
-function historyChannelLabel(entry) {
-    if (entry.channelName)
-        return entry.channelName;
-    const channel = getChannel(entry.channelId || null);
-    if (!channel)
-        return entry.channelId ? "Unavailable channel" : "Draft (not sent)";
-    if (isDM(channel)) {
-        const recipients = Array.isArray(channel.recipients) ? channel.recipients : [];
-        const names = recipients.map((id) => nameOf(safe(() => UserStore.getUser(String(id)), null)));
-        return channel.name || names.join(", ") || "Direct message";
-    }
-    const guildId = channel.guild_id || channel.guildId;
-    const guildStore = safe(() => findByStoreName("GuildStore"), null);
-    const guild = guildId ? safe(() => guildStore?.getGuild?.(String(guildId)), null) : null;
-    return (channel.name ? "# " + channel.name : "Channel") + (guild?.name ? " · " + guild.name : "");
-}
-function deleteHistoryEntry(id) {
-    const deleted = historyEntries.find(entry => entry.id === id);
-    if (deleted?.messageId) {
-        translations.delete(String(deleted.messageId));
-        if (deleted.channelId)
-            refreshRow(deleted.channelId, String(deleted.messageId));
-    }
-    historyEntries = historyEntries.filter(entry => entry.id !== id);
-    const state = useQuickTranslate.getState();
-    const messageTranslations = deleted?.messageId
-        ? (state.messageTranslations || []).filter(entry => !(entry.messageId === String(deleted.messageId) && entry.channelId === String(deleted.channelId)))
-        : (state.messageTranslations || []);
-    state.updateSettings({ historyEntries, messageTranslations });
-    persistLocalData();
-}
-function dismissHistoryNavigation(navigation) {
-    let current = navigation;
-    let depth = 0;
-    while (current && depth++ < 8) {
-        try {
-            if (current.canGoBack?.()) {
-                if (typeof current.popToTop === "function")
-                    current.popToTop();
-                else
-                    current.goBack?.();
-            }
-            current = current.getParent?.();
-        }
-        catch (_) {
-            break;
-        }
-    }
-}
-function jumpToHistoryEntry(entry, navigation) {
-    if (!entry.channelId || !entry.messageId) {
-        toast("This translation is not linked to a Discord message");
-        return;
-    }
-    const jump = safe(() => findByProps("jumpToMessage"), null);
-    const navigate = safe(() => findByProps("transitionToChannel"), null);
-    const performJump = () => {
-        try {
-            if (typeof jump?.jumpToMessage !== "function")
-                throw new Error("message navigation is unavailable");
-            jump.jumpToMessage({ channelId: entry.channelId, messageId: entry.messageId, flash: true, jumpType: "ANIMATED" });
-        }
-        catch (_) {
-            toast("Could not jump to this message");
-        }
-    };
+      globalThis[GPL_ALERT_BRIDGE_KEY] = {
+        active: true,
+        willShowDeleteAlert,
+      };
+    } catch (_) {}
     try {
-        if (typeof navigate?.transitionToChannel !== "function")
-            throw new Error("channel navigation is unavailable");
-        dismissHistoryNavigation(navigation);
-        navigate.transitionToChannel(entry.channelId, {});
-        setTimeout(performJump, 650);
-    }
-    catch (_) {
-        toast("Could not open this channel");
-    }
-}
-function HistoryPage() {
-    const h = React.createElement;
-    const settings = useQuickTranslate();
-    const navigation = NavigationNative.useNavigation();
-    const [query, setQuery] = React.useState("");
-    const allRows = Array.isArray(settings.historyEntries) ? settings.historyEntries : [];
-    const needle = query.trim().toLowerCase();
-    const rows = allRows.filter(entry => !needle || [entry.original, entry.translated, historyChannelLabel(entry), languageLabel(entry.source), languageLabel(entry.target)].join(" ").toLowerCase().includes(needle));
-    const cards = rows.map((entry, index) => h(CustomSection, { key: entry.id + index, title: languageLabel(entry.source) + " → " + languageLabel(entry.target) }, h(RN.View, { style: { padding: 14 } }, h(RN.Text, { numberOfLines: 1, style: { color: palette().sub, fontSize: 12, marginBottom: 7 } }, historyChannelLabel(entry) + (entry.messageId ? "" : " · Draft")), h(RN.Text, { numberOfLines: 3, style: { color: palette().sub, fontSize: 13, marginBottom: 7 } }, entry.original), h(RN.Text, { style: { color: palette().text, fontSize: 15, fontWeight: "600", lineHeight: 21 } }, entry.translated), h(RN.Text, { style: { color: palette().sub, fontSize: 11, marginTop: 6 } }, (entry.provider === "deepl" ? "DeepL" : "Google") + " · " + new Date(entry.at).toLocaleString()), h(RN.View, { style: { flexDirection: "row", marginTop: 9 } }, h(RN.View, { style: { flex: 1, marginRight: 5 } }, h(CustomAction, { title: "Delete", secondary: true, onPress: () => deleteHistoryEntry(entry.id) })), h(RN.View, { style: { flex: 1, marginLeft: 5 } }, h(CustomAction, { title: "Jump to message", secondary: true, disabled: !entry.channelId || !entry.messageId, onPress: () => jumpToHistoryEntry(entry, navigation) }))), h(CustomAction, { title: "Copy translation", secondary: true, onPress: () => copyText(entry.translated) }))));
-    return h(RN.ScrollView, { style: { flex: 1 }, contentContainerStyle: { padding: 16, paddingBottom: 42 } }, h(RN.View, { style: { flexDirection: "row", marginBottom: 12 } }, h(RN.View, { style: { flex: 1 } }, h(RN.Text, { style: { color: palette().text, fontSize: 22, fontWeight: "800" } }, "Translation history"), h(RN.Text, { style: { color: palette().sub, fontSize: 13, marginTop: 3 } }, rows.length + " shown · " + allRows.length + " saved locally")), h(RN.Text, { style: { color: palette().sub, fontSize: 19, marginTop: 2 } }, "◷")), h(CustomInput, { value: query, placeholder: "Search translations, channels, or languages", onChangeText: setQuery, autoCorrect: false, style: { marginBottom: 14 } }), rows.length ? null : h(RN.Text, { style: { color: palette().sub, fontSize: 14, paddingVertical: 20, textAlign: "center" } }, allRows.length ? "No history entries match this search." : "No translations saved yet."), ...cards);
-}
-function listChannelsForGuild(guild) {
-    const channels = [];
-    const seen = new Set();
-    const channelStore = ChannelStore;
-    const add = (item) => {
-        if (!item || typeof item !== "object" || item.id == null || item.name == null)
-            return;
-        const canonical = safe(() => channelStore.getChannel(String(item.id)), null) || item;
-        const kind = canonical.type;
-        if (kind != null && ![0, 5, 10, 11, 12, 15, 16].includes(kind))
-            return;
-        if (!canonical.guild_id && !canonical.guildId && !guild?.id)
-            return;
-        const id = String(canonical.id);
-        if (seen.has(id))
-            return;
-        seen.add(id);
-        channels.push({ ...canonical, id, guildId: String(guild.id), guildName: guild.name || "Server" });
-    };
-    const visit = (value, depth) => {
-        if (!value || depth > 6)
-            return;
-        if (Array.isArray(value)) {
-            value.forEach((item) => visit(item, depth + 1));
-            return;
-        }
-        if (typeof value !== "object")
-            return;
-        add(value);
-        for (const child of Object.values(value)) {
-            if (child && typeof child === "object")
-                visit(child, depth + 1);
-        }
-    };
-    for (const method of ["getMutableGuildChannelsForGuild", "getGuildChannels", "getChannels", "getSortedChannels"]) {
-        if (typeof channelStore?.[method] !== "function")
-            continue;
-        visit(safe(() => channelStore[method](String(guild.id)), null), 0);
-    }
-    visit(guild.channels, 0);
-    return channels;
-}
-function AutoChannelsPage() {
-    const h = React.createElement;
-    const settings = useQuickTranslate();
-    const [query, setQuery] = React.useState("");
-    const guildStore = safe(() => findByStoreName("GuildStore"), null);
-    const guilds = Object.values(safe(() => guildStore?.getGuilds?.(), {}) || {});
-    const selected = (settings.autoChannelIds || []).map(String);
-    const q = query.trim().toLowerCase();
-    const sections = guilds.map(guild => ({
-        guild,
-        channels: listChannelsForGuild(guild).filter(channel => !q || String(channel.name).toLowerCase().includes(q) || String(guild.name).toLowerCase().includes(q)),
-    })).filter(section => section.channels.length);
-    const toggleChannel = (id) => {
-        const next = selected.includes(id) ? selected.filter(x => x !== id) : selected.concat(id);
-        settings.updateSettings({ autoChannelIds: next });
-    };
-    const dmIds = safe(() => PrivateChannelSortStore.getPrivateChannelIds?.(), []) || [];
-    const dms = dmIds.map(id => safe(() => ChannelStore.getChannel(String(id)), null)).filter((channel) => channel && isDM(channel)).map((channel) => {
-        const recipients = Array.isArray(channel.recipients) ? channel.recipients : [];
-        const label = channel.name || recipients.map((id) => nameOf(safe(() => UserStore.getUser(String(id)), null))).join(", ") || "Direct message";
-        return Object.assign({}, channel, { displayName: label });
-    }).filter((channel) => !q || String(channel.displayName).toLowerCase().includes(q));
-    const row = (channel, label, index, total) => {
-        const id = String(channel.id);
-        const marked = selected.includes(id);
-        return h(CustomRow, { key: id, title: label, subtitle: channel.topic || undefined, last: index === total - 1,
-            trailing: h(RN.View, { style: { width: 23, height: 23, borderRadius: 6, borderWidth: 1.5, borderColor: marked ? palette().blurple : palette().off, backgroundColor: marked ? palette().blurple : "transparent", alignItems: "center", justifyContent: "center" } }, marked ? h(RN.Text, { style: { color: "#FFFFFF", fontSize: 15, fontWeight: "800" } }, "✓") : null),
-            onPress: () => toggleChannel(id) });
-    };
-    return h(RN.ScrollView, { style: { flex: 1 }, keyboardShouldPersistTaps: "handled", contentContainerStyle: { padding: 16, paddingBottom: 40 } }, h(RN.Text, { style: { color: palette().sub, fontSize: 13, marginBottom: 12 } }, "Select only the channels and DMs where new incoming messages should be translated. " + selected.length + " selected."), h(CustomInput, { value: query, placeholder: "Search channels, servers, or DMs", onChangeText: setQuery, autoCorrect: false, style: { marginBottom: 16 } }), dms.length ? h(CustomSection, { title: "Direct messages" }, ...dms.map((channel, index) => row(channel, channel.displayName, index, dms.length))) : null, ...sections.map(section => h(CustomSection, { key: section.guild.id, title: section.guild.name || "Server" }, ...section.channels.map((channel, index) => row(channel, "# " + channel.name, index, section.channels.length)))), !dms.length && !sections.length ? h(RN.Text, { style: { color: palette().sub, fontSize: 14, paddingVertical: 22, textAlign: "center" } }, "No channels or DMs found. Open them once so the channel list can load.") : null);
-}
-const TargetOutPage = () => React.createElement(LangPicker, { field: "targetOut" });
-const SourceOutPage = () => React.createElement(LangPicker, { field: "sourceOut" });
-const TargetInPage = () => React.createElement(LangPicker, { field: "targetIn" });
-function Settings() {
-    const h = React.createElement;
-    const navigation = NavigationNative.useNavigation();
-    const settings = useQuickTranslate();
-    const go = (title, render) => navigation.push("RAIN_CUSTOM_PAGE", { title, render });
-    const C = palette();
-    const toggle = (title, subtitle, value, change) => h(CustomRow, {
-        title, subtitle, trailing: h(CustomSwitch, { value, onChange: change }),
-    });
-    if (!settings._hasHydrated)
-        return h(RN.View, { style: { flex: 1, alignItems: "center", justifyContent: "center", padding: 24 } }, h(RN.Text, { style: { color: C.sub, fontSize: 15 } }, "Loading saved Quick Translate settings…"));
-    return h(RN.ScrollView, { style: { flex: 1 }, contentContainerStyle: { padding: 16, paddingBottom: 42 } }, h(RN.Text, { style: { color: C.text, fontSize: 25, fontWeight: "800", marginBottom: 5 } }, "Quick Translate"), h(RN.Text, { style: { color: C.sub, fontSize: 14, marginBottom: 23 } }, "Translation preferences for your chats"), h(CustomSection, { title: "Translation service" }, h(CustomRow, { title: "Google Translate", subtitle: "No key required · selected by default", icon: "🌐", last: settings.provider !== "deepl",
-        trailing: settings.provider !== "deepl" ? h(RN.Text, { style: { color: C.blurple, fontWeight: "800", fontSize: 18 } }, "✓") : null,
-        onPress: () => settings.updateSettings({ provider: "google" }) }), h(CustomRow, { title: "DeepL", subtitle: "Uses your personal API key · Google fallback", icon: "✦", last: settings.provider === "deepl",
-        trailing: settings.provider === "deepl" ? h(RN.Text, { style: { color: C.blurple, fontWeight: "800", fontSize: 18 } }, "✓") : null,
-        onPress: () => settings.updateSettings({ provider: "deepl" }) }), settings.provider === "deepl" ? h(RN.View, { style: { padding: 14, borderTopWidth: 1, borderTopColor: C.card2 } }, h(RN.Text, { style: { color: C.text, fontSize: 14, fontWeight: "600", marginBottom: 8 } }, "DeepL API key"), h(CustomInput, { value: settings.deeplApiKey || "", placeholder: "Paste your API key", autoCapitalize: "none", autoCorrect: false, secureTextEntry: true, onChangeText: (deeplApiKey) => settings.updateSettings({ deeplApiKey }) }), h(RN.Text, { style: { color: C.sub, fontSize: 12, marginTop: 7, lineHeight: 17 } }, "Your key is stored in this plugin’s local settings. Free API keys ending in :fx are supported.")) : null), h(CustomSection, { title: "Translation rules" }, h(RN.View, { style: { padding: 14 } }, h(RN.Text, { style: { color: C.text, fontSize: 15, fontWeight: "600", marginBottom: 5 } }, "Keep words unchanged"), h(RN.Text, { style: { color: C.sub, fontSize: 12, lineHeight: 16, marginBottom: 9 } }, "Separate words with commas or new lines. Matching whole words keep their original form."), h(CustomInput, { value: (settings.protectedWords || []).join(", "), placeholder: "e.g. names, terms", multiline: true, textAlignVertical: "top", onChangeText: (value) => {
-            const protectedWords = Array.from(new Set(String(value || "").split(/[,\n]+/).map((word) => word.trim()).filter(Boolean))).slice(0, 100);
-            settings.updateSettings({ protectedWords });
-        }, style: { minHeight: 88, paddingVertical: 11 } }))), h(CustomSection, { title: "Languages" }, h(CustomRow, { title: "Translate my messages to", subtitle: languageLabel(settings.targetOut), icon: "↗", trailing: h(RN.Text, { style: { color: C.sub, fontSize: 21 } }, "›"), onPress: () => go("Translate my messages to", TargetOutPage) }), h(CustomRow, { title: "My messages are written in", subtitle: languageLabel(settings.sourceOut), icon: "↙", trailing: h(RN.Text, { style: { color: C.sub, fontSize: 21 } }, "›"), onPress: () => go("My messages are written in", SourceOutPage) }), h(CustomRow, { title: "Translate messages to", subtitle: languageLabel(settings.targetIn), icon: "文", trailing: h(RN.Text, { style: { color: C.sub, fontSize: 21 } }, "›"), onPress: () => go("Translate messages to", TargetInPage) }), h(CustomRow, { title: "Quick languages", subtitle: (settings.favLangs || []).length + " of " + MAX_FAVS + " selected", icon: "★", last: true, trailing: h(RN.Text, { style: { color: C.sub, fontSize: 21 } }, "›"), onPress: () => go("Quick languages", FavPicker) })), h(CustomSection, { title: "Appearance" }, toggle("Immersive translation", "Show the translation below the original message. Turn off to replace its text.", !!settings.immersive, (v) => { settings.updateSettings({ immersive: v }); refreshTranslated(); }), toggle("Show detected source language", "Show a compact source → target code below the translation.", !!settings.showSourceLanguage, (v) => { settings.updateSettings({ showSourceLanguage: v }); refreshTranslated(); if (v)
-        toast("Translate a message to see its source and target codes"); }), h(CustomRow, { title: "Translation color", subtitle: translationColor(), trailing: h(RN.View, { style: { flexDirection: "row", alignItems: "center" } }, h(RN.View, { style: { width: 15, height: 15, borderRadius: 5, backgroundColor: translationColor(), marginRight: 9 } }), h(RN.Text, { style: { color: C.sub, fontSize: 21 } }, "›")), last: true, onPress: () => go("Translation color", ColorPicker) })), h(CustomSection, { title: "Incoming messages" }, toggle("Immersive auto-translate", "Show auto-translations below original.", !!settings.autoIncomingImmersive, (v) => { settings.updateSettings({ autoIncomingImmersive: v }); refreshTranslated(); }), h(CustomRow, { title: "Automatic channels and DMs", subtitle: (settings.autoChannelIds || []).length + " selected", icon: "☷", trailing: h(RN.Text, { style: { color: C.sub, fontSize: 21 } }, "›"), last: true, onPress: () => go("Automatic channels and DMs", AutoChannelsPage) })), h(CustomSection, { title: "Translation history & cache" }, toggle("Keep translations after restart", "Restore saved translations when Discord restarts.", settings.keepMessageTranslations !== false, (v) => { settings.updateSettings({ keepMessageTranslations: v, messageTranslations: v ? (settings.messageTranslations || []) : [] }); }), h(CustomRow, { title: "Translation history", subtitle: (settings.historyEntries || []).length + " saved locally", icon: "◷", trailing: h(RN.Text, { style: { color: C.sub, fontSize: 21 } }, "›"), onPress: () => go("Translation history", HistoryPage) }), h(RN.View, { style: { paddingHorizontal: 13, paddingBottom: 11 } }, h(RN.Text, { style: { color: C.sub, fontSize: 12, marginTop: 10 } }, "Removes saved history, message translations and cached results."), h(CustomAction, { title: "Clear translation history & cache", secondary: true, onPress: () => {
-            clearTranslationData();
-        } }))), h(CustomSection, { title: "Chat composer" }, toggle("Show translate button", "Show the translate control in the chat composer.", settings.showButton !== false, (v) => { if (!v)
-        armed = null; settings.updateSettings({ showButton: v }); notifyButton(); }), toggle("Translate before sending", "Send becomes Translate; tap again to send.", settings.draftBeforeSend !== false, (v) => { settings.updateSettings({ draftBeforeSend: v }); notifyButton(); }), toggle("Highlight Translate Draft button", "Use a blue background to distinguish Translate from Send.", settings.highlightDraftButton !== false, (v) => settings.updateSettings({ highlightDraftButton: v })), toggle("Remember language per chat", "Store each chat’s default language separately.", settings.rememberLanguagesPerChat !== false, (v) => settings.updateSettings({ rememberLanguagesPerChat: v })), toggle("Keep translate active", "In normal mode, keep translating sent messages until you turn it off.", !!settings.keepArmed, (v) => { settings.updateSettings({ keepArmed: v }); notifyButton(); }), h(CustomRow, { title: "Button position", subtitle: settings.anchor === "send" ? "Next to the Send button" : "Next to the + button", trailing: h(RN.Text, { style: { color: C.sub, fontSize: 21 } }, "›"), onPress: () => {
-            const sheets = safe(() => findByProps("showSimpleActionSheet"), null);
-            if (!sheets?.showSimpleActionSheet) {
-                toast("Could not open position options");
-                return;
-            }
-            const hide = safe(() => findByProps("openLazy", "hideActionSheet"), null);
-            const savePosition = (anchor) => {
-                useQuickTranslate.getState().updateSettings({ anchor });
-                notifyButton();
-                safe(() => hide?.hideActionSheet?.(), null);
-            };
-            sheets.showSimpleActionSheet({ key: "QTButtonPosition", header: { title: "Button position" }, options: [
-                    { label: "Next to the + button", isMarked: settings.anchor !== "send", onPress: () => savePosition("actions") },
-                    { label: "Next to the Send button", isMarked: settings.anchor === "send", onPress: () => savePosition("send") },
-                ] });
-        } }), toggle("Save translation history", "Store translated messages and drafts locally in Translation history.", settings.saveHistory !== false, (v) => settings.updateSettings({ saveHistory: v })), toggle("Hide Gift button", "Hide the Gift button in the chat composer.", !!settings.hideGiftButton, (v) => { settings.updateSettings({ hideGiftButton: v }); toast("Restart Discord to apply this setting"); })), h(RN.Text, { style: { color: C.sub, fontSize: 12, textAlign: "center", marginTop: 1 } }, "Quick Translate v1.0.0"));
-}
-/* ------------------------------------------------------------------ */
-/* plugin                                                              */
-/* ------------------------------------------------------------------ */
-const step = (name, fn) => {
+      appStateSub = RN.AppState.addEventListener("change", (state) => { if (state === "active" && purge()) save(); else if (state !== "active") flushRecentArchive(); });
+    } catch (_) {}
+  }
+
+  function onUnload() {
+    flushRecentArchive();
+    for (const u of unpatches.splice(0)) { try { u(); } catch (_) {} }
+    if (renderUnpatch) { try { renderUnpatch(); } catch (_) {} renderUnpatch = null; }
+    if (appStateSub && appStateSub.remove) { try { appStateSub.remove(); } catch (_) {} }
+    appStateSub = null;
     try {
-        fn();
-    }
-    catch (e) {
-        console.error(`[QuickTranslate] ${name} failed:`, e);
-    }
-};
-function migrateSettings() {
-    let stored = useQuickTranslate.getState();
-    if (stored.settingsVersion < 2) {
-        stored.updateSettings({ keepArmed: true, hideGiftButton: true, settingsVersion: 2 });
-        stored = useQuickTranslate.getState();
-    }
-    if (stored.settingsVersion < 3) {
-        stored.updateSettings({
-            showSourceLanguage: false, autoIncoming: false, includeDMs: false,
-            excludedChannelIds: [], translateDraft: false, historyEntries: [], cacheEntries: [], settingsVersion: 3,
-        });
-        stored = useQuickTranslate.getState();
-    }
-    if (stored.settingsVersion < 4) {
-        stored.updateSettings({
-            liveTranslateInput: undefined,
-            translateDraft: undefined,
-            settingsVersion: 4,
-        });
-        stored = useQuickTranslate.getState();
-    }
-    if (stored.settingsVersion < 5) {
-        stored.updateSettings({
-            autoChannelIds: Array.isArray(stored.autoChannelIds) ? stored.autoChannelIds : [],
-            autoIncomingImmersive: stored.autoIncomingImmersive !== false,
-            includeDMs: undefined,
-            excludedChannelIds: undefined,
-            settingsVersion: 5,
-        });
-        stored = useQuickTranslate.getState();
-    }
-    if (stored.settingsVersion < 6) {
-        stored.updateSettings({
-            immersive: true,
-            translateOnSend: undefined,
-            liveTranslateInput: undefined,
-            settingsVersion: 6,
-        });
-        stored = useQuickTranslate.getState();
-    }
-    if (stored.settingsVersion < 7) {
-        stored.updateSettings({
-            draftBeforeSend: true,
-            saveHistory: stored.saveHistory !== false,
-            rememberDrafts: stored.rememberDrafts !== false,
-            rememberedDrafts: stored.rememberedDrafts && typeof stored.rememberedDrafts === "object" ? stored.rememberedDrafts : {},
-            settingsVersion: 7,
-        });
-        stored = useQuickTranslate.getState();
-    }
-    if (stored.settingsVersion < 8) {
-        stored.updateSettings({
-            rememberLanguagesPerChat: stored.rememberLanguagesPerChat !== false,
-            chatLanguages: stored.chatLanguages && typeof stored.chatLanguages === "object" ? stored.chatLanguages : {},
-            highlightDraftButton: stored.highlightDraftButton !== false,
-            settingsVersion: 8,
-        });
-        stored = useQuickTranslate.getState();
-    }
-    if (stored.settingsVersion < 9) {
-        stored.updateSettings({
-            autoIncoming: undefined,
-            protectedWords: Array.isArray(stored.protectedWords) ? stored.protectedWords : [],
-            settingsVersion: 9,
-        });
-        stored = useQuickTranslate.getState();
-    }
-    if (stored.settingsVersion < 10) {
-        stored.updateSettings({ quickTargets: undefined, settingsVersion: 10 });
-        stored = useQuickTranslate.getState();
-    }
-    if (stored.settingsVersion < 11) {
-        stored.updateSettings({ rememberedDrafts: {}, rememberDrafts: undefined, settingsVersion: 11 });
-        stored = useQuickTranslate.getState();
-    }
-    if (stored.settingsVersion < 12) {
-        const oldMessageTranslations = (Array.isArray(stored.messageTranslations) ? stored.messageTranslations : []).slice();
-        if (!oldMessageTranslations.length) {
-            for (const entry of (Array.isArray(stored.historyEntries) ? stored.historyEntries : [])) {
-                if (!entry?.messageId || !entry.channelId || typeof entry.translated !== "string")
-                    continue;
-                oldMessageTranslations.push({
-                    id: String(entry.channelId) + "|" + String(entry.messageId),
-                    messageId: String(entry.messageId), channelId: String(entry.channelId),
-                    original: entry.original, translated: entry.translated, source: entry.source || "auto",
-                    target: entry.target || "en", at: Number(entry.at) || Date.now(),
-                    autoIncoming: (stored.autoChannelIds || []).map(String).includes(String(entry.channelId)),
-                });
-            }
-        }
-        stored.updateSettings({
-            keepMessageTranslations: stored.keepMessageTranslations !== false,
-            messageTranslations: oldMessageTranslations.slice(0, MAX_TRANSLATIONS),
-            settingsVersion: 12,
-        });
-        stored = useQuickTranslate.getState();
-    }
-    if (stored.anchor !== "actions" && stored.anchor !== "send")
-        stored.updateSettings({ anchor: "actions" });
-}
-function waitForSettingsHydration() {
-    const current = useQuickTranslate.getState();
-    if (current._hasHydrated) {
-        migrateSettings();
-        return;
-    }
-    let unsubscribe = null;
-    unsubscribe = useQuickTranslate.subscribe((next) => {
-        if (!next._hasHydrated)
-            return;
-        if (unsubscribe)
-            unsubscribe();
-        migrateSettings();
-        notifyButton();
-    });
-    unpatches.push(() => { if (unsubscribe)
-        unsubscribe(); });
-}
-function onChannelSelect(e) {
-    const id = e && e.channelId != null ? String(e.channelId) : null;
-    if (id === lastChannelId)
-        return;
-    lastChannelId = id;
-    bridge.text = "";
-    bridge.change = null;
-    bridge.inst = null;
-    bridge.seen = 0;
-    if (lastOriginalChannelId && lastOriginalChannelId !== id) {
-        lastOriginal = null;
-        lastOriginalChannelId = null;
-        lastTranslatedText = null;
-    }
-    if (bulkSelectionRequest && id !== bulkSelectionRequest.channelId) {
-        bulkSelectionRequest = null;
-        notifyButton();
-    }
-    if (armed) {
-        armed = null;
-        notifyButton();
-    }
-}
-exports.default = {
-    name: "Quick Translate",
-    description: "Translate incoming and outgoing messages with Google Translate or DeepL.",
-    id: "quicktranslate",
-    version: "1.0.0",
-    start() {
-        renderErrors = 0;
-        step("settingsHydration", waitForSettingsHydration);
-        step("localData", hydrateLocalData);
-        step("channel", () => {
-            lastChannelId = currentChannelId();
-            FluxDispatcher.subscribe("CHANNEL_SELECT", onChannelSelect);
-            unpatches.push(() => FluxDispatcher.unsubscribe("CHANNEL_SELECT", onChannelSelect));
-        });
-        step("incomingMessages", () => {
-            FluxDispatcher.subscribe("MESSAGE_CREATE", onIncomingMessage);
-            unpatches.push(() => FluxDispatcher.unsubscribe("MESSAGE_CREATE", onIncomingMessage));
-        });
-        step("render", patchRender);
-        step("actionSheet", patchActionSheet);
-        step("inputCapture", installInputCapture);
-        step("send", patchSend);
-        step("chatButton", patchChatButton);
-    },
-    stop() {
-        for (const u of unpatches.splice(0)) {
-            try {
-                u();
-            }
-            catch (_) { /* ignore */ }
-        }
-        if (renderUnpatch) {
-            try {
-                renderUnpatch();
-            }
-            catch (_) { /* ignore */ }
-            renderUnpatch = null;
-        }
-        translations.clear();
-        cacheGeneration++;
-        cache.clear();
-        inFlight.clear();
-        autoSeen.clear();
-        bulkSelectionRequest = null;
-        persistentReady = false;
-        historyEntries = [];
-        bridge.text = "";
-        bridge.change = null;
-        bridge.inst = null;
-        armed = null;
-        lastOriginal = null;
-        lastOriginalChannelId = null;
-        lastTranslatedText = null;
-    },
-    settings: Settings,
+      const bridge = globalThis[GPL_ALERT_BRIDGE_KEY];
+      if (bridge && bridge.willShowDeleteAlert === willShowDeleteAlert) delete globalThis[GPL_ALERT_BRIDGE_KEY];
+    } catch (_) {}
+    alertedPings.clear();
+    lastSettingsNavigation = null;
+    clearRecentMessages();
+    retainedPings.clear();
+    pings = [];
+  }
+
+  return { onLoad, onUnload, settings: Settings };
+})();
+
+// @ts-ignore Discord evaluates this file as a CommonJS plugin entry.
+module.exports = {
+  start() { implementation.onLoad(); },
+  stop() { implementation.onUnload(); },
+  settings: implementation.settings,
 };
