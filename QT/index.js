@@ -11,7 +11,7 @@ const { ChannelStore, MessageStore, PrivateChannelSortStore, SelectedChannelStor
 /* ------------------------------------------------------------------ */
 /* constants + settings store                                          */
 /* ------------------------------------------------------------------ */
-const BUILD = "v1.0.1";
+const BUILD = "v1.0.0";
 const FLAG_TOGGLE = 0x04000000;
 const ACCENT = "#8EA1FF";
 const MAX_TRANSLATIONS = 300;
@@ -918,7 +918,7 @@ function decorate(row, input) {
     const rawSource = String(tr.src || "").toLowerCase();
     const sourceCode = rawSource === "zh-cn" ? "zh-CN" : rawSource === "zh-tw" ? "zh-TW" : rawSource.split("-")[0];
     const sourceHint = qt.showSourceLanguage && sourceCode && sourceCode !== "auto"
-        ? [{ type: "text", content: "\n" + langName(sourceCode) + " → " + langName(String(tr.tl || "")) + "\n", color: palette().sub, __tr: true }]
+        ? [{ type: "text", content: "\n" + langName(sourceCode) + " → " + langName(String(tr.tl || "")) + "\n", color: palette().sub, fontSize: 11, style: { fontSize: 11, lineHeight: 15 }, __tr: true }]
         : [];
     const immersive = tr.autoIncoming ? qt.autoIncomingImmersive : (tr.immersive ?? qt.immersive);
     if (immersive)
@@ -960,23 +960,39 @@ function patchRender() {
 /* ------------------------------------------------------------------ */
 /* message long-press menu                                             */
 /* ------------------------------------------------------------------ */
+function messageContentText(value) {
+    if (typeof value === "string") return value;
+    if (!Array.isArray(value)) return "";
+    const parts = [];
+    const visit = (node) => {
+        if (typeof node === "string") { parts.push(node); return; }
+        if (!node || typeof node !== "object") return;
+        if (typeof node.content === "string") parts.push(node.content);
+        else if (Array.isArray(node.content)) node.content.forEach(visit);
+        if (node.type === "customEmoji" && node.name) parts.push(":" + node.name + ":");
+    };
+    value.forEach(visit);
+    return parts.join("");
+}
 function messagePlan(message) {
-    if (!message || !message.id || typeof message.content !== "string" || !message.content.trim())
-        return null;
+    if (!message || !message.id) return null;
+    const text = messageContentText(message.__trBase || message.content);
+    if (!text.trim()) return null;
+    const actionMessage = typeof message.content === "string" ? message : { ...message, content: text };
     const plan = [];
     if (translations.has(message.id)) {
-        plan.push({ key: "qt-original", label: "Show original message", press: () => showOriginal(message) });
+        plan.push({ key: "qt-original", label: "Show original message", press: () => showOriginal(actionMessage) });
     }
     else {
-        plan.push({ key: "qt-translate", label: "Translate to " + langName(qt.targetIn), press: () => translateMessage(message, qt.targetIn) });
+        plan.push({ key: "qt-translate", label: "Translate to " + langName(qt.targetIn), press: () => translateMessage(actionMessage, qt.targetIn) });
     }
     const channelId = String(message.channel_id || message.channelId || currentChannelId() || "");
     if (channelId)
-        plan.push({ key: "qt-select-messages", label: "Bulk translate…", press: () => openBulkSelection(message) });
+        plan.push({ key: "qt-select-messages", label: "Bulk translate…", press: () => openBulkSelection(actionMessage) });
     plan.push({
         key: "qt-translate-to",
         label: "Translate to...",
-        press: () => showLanguagePicker("Translate to", (code) => translateMessage(message, code)),
+        press: () => showLanguagePicker("Translate to", (code) => translateMessage(actionMessage, code)),
     });
     const translated = translations.get(message.id);
     if (translated?.text)
@@ -1660,7 +1676,7 @@ function Settings() {
                     { label: "Next to the + button", isMarked: settings.anchor !== "send", onPress: () => savePosition("actions") },
                     { label: "Next to the Send button", isMarked: settings.anchor === "send", onPress: () => savePosition("send") },
                 ] });
-        } }), toggle("Save translation history", "Store translated messages and drafts locally in Translation history.", settings.saveHistory !== false, (v) => settings.updateSettings({ saveHistory: v })), toggle("Hide Gift button", "Hide the Gift button in the chat composer.", !!settings.hideGiftButton, (v) => { settings.updateSettings({ hideGiftButton: v }); toast("Restart Discord to apply this setting"); })), h(RN.Text, { style: { color: C.sub, fontSize: 12, textAlign: "center", marginTop: 1 } }, "Quick Translate v1.0.0"));
+        } }), toggle("Save translation history", "Store translated messages and drafts locally in Translation history.", settings.saveHistory !== false, (v) => settings.updateSettings({ saveHistory: v })), toggle("Hide Gift button", "Hide the Gift button in the chat composer.", !!settings.hideGiftButton, (v) => { settings.updateSettings({ hideGiftButton: v }); toast("Restart Discord to apply this setting"); })), h(RN.View, { style: { marginTop: 16, marginBottom: 10, padding: 13, borderRadius: 15, backgroundColor: C.card, borderWidth: 1, borderColor: C.card2 } }, h(RN.Text, { style: { color: C.text, fontSize: 14, fontWeight: "700", marginBottom: 5 } }, "Quick guide"), h(RN.Text, { style: { color: C.sub, fontSize: 12, lineHeight: 17 } }, "Long-press a message to translate it or show its original text."), h(RN.Text, { style: { color: C.sub, fontSize: 12, lineHeight: 17, marginTop: 3 } }, "Use the composer button for drafts; choose Google Translate or DeepL above.")), h(RN.Text, { style: { color: C.sub, fontSize: 12, textAlign: "center", marginTop: 1 } }, "Quick Translate " + BUILD));
 }
 /* ------------------------------------------------------------------ */
 /* plugin                                                              */
