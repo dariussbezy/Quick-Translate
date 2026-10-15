@@ -953,9 +953,9 @@ function decorate(row, input) {
     const immersive = tr.autoIncoming ? qt.autoIncomingImmersive : (tr.immersive ?? qt.immersive);
     const lineBreak = () => ({ type: "text", content: "\n", __tr: true });
     if (immersive)
-        out = base.concat([lineBreak()], sourceHint, sourceHint.length ? [lineBreak()] : [], paint(text, color));
+        out = base.concat([lineBreak()], sourceHint, paint(text, color));
     else
-        out = sourceHint.concat(sourceHint.length ? [lineBreak()] : [], paint(text, color));
+        out = sourceHint.concat(paint(text, color));
     if (!out.length)
         return;
     m.__trBase = base;
