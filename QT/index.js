@@ -918,7 +918,7 @@ function decorate(row, input) {
     const rawSource = String(tr.src || "").toLowerCase();
     const sourceCode = rawSource === "zh-cn" ? "zh-CN" : rawSource === "zh-tw" ? "zh-TW" : rawSource.split("-")[0];
     const sourceHint = qt.showSourceLanguage && sourceCode && sourceCode !== "auto"
-        ? [{ type: "text", content: "\n" + langName(sourceCode) + " → " + langName(String(tr.tl || "")) + "\n", color: palette().sub, fontSize: 11, style: { fontSize: 11, lineHeight: 15 }, __tr: true }]
+        ? [{ type: "text", content: "\n-# " + langName(sourceCode) + " → " + langName(String(tr.tl || "")) + "\n", color: palette().sub, fontSize: 11, style: { fontSize: 11, lineHeight: 15 }, __tr: true }]
         : [];
     const immersive = tr.autoIncoming ? qt.autoIncomingImmersive : (tr.immersive ?? qt.immersive);
     if (immersive)
@@ -1676,7 +1676,7 @@ function Settings() {
                     { label: "Next to the + button", isMarked: settings.anchor !== "send", onPress: () => savePosition("actions") },
                     { label: "Next to the Send button", isMarked: settings.anchor === "send", onPress: () => savePosition("send") },
                 ] });
-        } }), toggle("Save translation history", "Store translated messages and drafts locally in Translation history.", settings.saveHistory !== false, (v) => settings.updateSettings({ saveHistory: v })), toggle("Hide Gift button", "Hide the Gift button in the chat composer.", !!settings.hideGiftButton, (v) => { settings.updateSettings({ hideGiftButton: v }); toast("Restart Discord to apply this setting"); })), h(RN.View, { style: { marginTop: 16, marginBottom: 10, padding: 13, borderRadius: 15, backgroundColor: C.card, borderWidth: 1, borderColor: C.card2 } }, h(RN.Text, { style: { color: C.text, fontSize: 14, fontWeight: "700", marginBottom: 5 } }, "Quick guide"), h(RN.Text, { style: { color: C.sub, fontSize: 12, lineHeight: 17 } }, "Long-press a message to translate it or show its original text."), h(RN.Text, { style: { color: C.sub, fontSize: 12, lineHeight: 17, marginTop: 3 } }, "Use the composer button for drafts; choose Google Translate or DeepL above.")), h(RN.Text, { style: { color: C.sub, fontSize: 12, textAlign: "center", marginTop: 1 } }, "Quick Translate " + BUILD));
+        } }), toggle("Save translation history", "Store translated messages and drafts locally in Translation history.", settings.saveHistory !== false, (v) => settings.updateSettings({ saveHistory: v })), toggle("Hide Gift button", "Hide the Gift button in the chat composer.", !!settings.hideGiftButton, (v) => { settings.updateSettings({ hideGiftButton: v }); toast("Restart Discord to apply this setting"); })), h(RN.View, { style: { marginTop: 16, marginBottom: 10, padding: 13, borderRadius: 15, backgroundColor: C.card, borderWidth: 1, borderColor: C.card2 } }, h(RN.Text, { style: { color: C.text, fontSize: 16, fontWeight: "700", marginBottom: 7 } }, "Quick guide"), h(RN.Text, { style: { color: C.sub, fontSize: 14, lineHeight: 20 } }, "Long-press a message to translate it or show its original text."), h(RN.Text, { style: { color: C.sub, fontSize: 14, lineHeight: 20, marginTop: 5 } }, "Use the composer button for drafts; choose Google Translate or DeepL above.")), h(RN.Text, { style: { color: C.sub, fontSize: 12, textAlign: "center", marginTop: 1 } }, "Quick Translate " + BUILD));
 }
 /* ------------------------------------------------------------------ */
 /* plugin                                                              */
