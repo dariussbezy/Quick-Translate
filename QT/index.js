@@ -1587,10 +1587,33 @@ function HistoryPage() {
     const settings = useQuickTranslate();
     const navigation = NavigationNative.useNavigation();
     const [query, setQuery] = React.useState("");
+    const [retryingId, setRetryingId] = React.useState(null);
     const allRows = Array.isArray(settings.historyEntries) ? settings.historyEntries : [];
     const needle = query.trim().toLowerCase();
     const rows = allRows.filter(entry => !needle || [entry.original, entry.translated, historyChannelLabel(entry), languageLabel(entry.source), languageLabel(entry.target)].join(" ").toLowerCase().includes(needle));
-    const cards = rows.map((entry, index) => h(CustomSection, { key: entry.id + index, title: languageLabel(entry.source) + " → " + languageLabel(entry.target) }, h(RN.View, { style: { padding: 14 } }, h(RN.Text, { numberOfLines: 1, style: { color: palette().sub, fontSize: 12, marginBottom: 7 } }, historyChannelLabel(entry) + (entry.messageId ? "" : " · Draft")), h(RN.Text, { numberOfLines: 3, style: { color: palette().sub, fontSize: 13, marginBottom: 7 } }, entry.original), h(RN.Text, { style: { color: palette().text, fontSize: 15, fontWeight: "600", lineHeight: 21 } }, entry.translated), h(RN.Text, { style: { color: palette().sub, fontSize: 11, marginTop: 6 } }, (entry.provider === "deepl" ? "DeepL" : "Google") + " · " + new Date(entry.at).toLocaleString()), h(RN.View, { style: { flexDirection: "row", marginTop: 9 } }, h(RN.View, { style: { flex: 1, marginRight: 5 } }, h(CustomAction, { title: "Delete", secondary: true, onPress: () => deleteHistoryEntry(entry.id) })), h(RN.View, { style: { flex: 1, marginLeft: 5 } }, h(CustomAction, { title: "Jump to message", secondary: true, disabled: !entry.channelId || !entry.messageId, onPress: () => jumpToHistoryEntry(entry, navigation) }))), h(CustomAction, { title: "Copy translation", secondary: true, onPress: () => copyText(entry.translated) }))));
+    const retryWithAlternate = async (entry) => {
+        if (retryingId)
+            return;
+        const provider = entry.provider === "deepl" ? "google" : "deepl";
+        setRetryingId(entry.id);
+        try {
+            const { out, tokens } = protect(String(entry.original || ""));
+            const result = await enqueueRequest(() => callApi(provider, out, entry.target, entry.source || "auto"));
+            const translated = restore(result.text, tokens, false);
+            const updated = { ...entry, alternativeTranslated: translated, alternativeProvider: provider, alternativeAt: Date.now() };
+            historyEntries = historyEntries.map(item => item.id === entry.id ? updated : item);
+            settings.updateSettings({ historyEntries: historyEntries.slice(0, MAX_HISTORY) });
+            persistLocalData();
+        } catch (error) {
+            toast(error?.message || "Could not retranslate with " + (provider === "deepl" ? "DeepL" : "Google"));
+        } finally {
+            setRetryingId(null);
+        }
+    };
+    const cards = rows.map((entry, index) => {
+        const alternateProvider = entry.provider === "deepl" ? "Google" : "DeepL";
+        return h(CustomSection, { key: entry.id + index, title: languageLabel(entry.source) + " → " + languageLabel(entry.target) }, h(RN.View, { style: { padding: 14 } }, h(RN.Text, { numberOfLines: 1, style: { color: palette().sub, fontSize: 12, marginBottom: 7 } }, historyChannelLabel(entry) + (entry.messageId ? "" : " · Draft")), h(RN.Text, { numberOfLines: 3, style: { color: palette().sub, fontSize: 13, marginBottom: 7 } }, entry.original), h(RN.Text, { style: { color: palette().text, fontSize: 15, fontWeight: "600", lineHeight: 21 } }, entry.translated), h(RN.Text, { style: { color: palette().sub, fontSize: 11, marginTop: 6 } }, (entry.provider === "deepl" ? "DeepL" : "Google") + " · " + new Date(entry.at).toLocaleString()), entry.alternativeTranslated ? h(RN.View, { style: { marginTop: 12, padding: 11, borderRadius: 11, backgroundColor: palette().bg, borderWidth: 1, borderColor: palette().card2 } }, h(RN.Text, { style: { color: palette().blurple, fontSize: 12, fontWeight: "700", marginBottom: 5 } }, "Alternative · " + (entry.alternativeProvider === "deepl" ? "DeepL" : "Google")), h(RN.Text, { style: { color: palette().text, fontSize: 15, lineHeight: 21 } }, entry.alternativeTranslated)) : null, h(CustomAction, { title: retryingId === entry.id ? "Translating…" : "Try " + alternateProvider, secondary: true, disabled: !!retryingId, onPress: () => retryWithAlternate(entry) }), h(RN.View, { style: { flexDirection: "row", marginTop: 2 } }, h(RN.View, { style: { flex: 1, marginRight: 5 } }, h(CustomAction, { title: "Delete", secondary: true, onPress: () => deleteHistoryEntry(entry.id) })), h(RN.View, { style: { flex: 1, marginLeft: 5 } }, h(CustomAction, { title: "Jump to message", secondary: true, disabled: !entry.channelId || !entry.messageId, onPress: () => jumpToHistoryEntry(entry, navigation) }))), h(CustomAction, { title: "Copy translation", secondary: true, onPress: () => copyText(entry.translated) })));
+    });
     return h(RN.ScrollView, { style: { flex: 1 }, contentContainerStyle: { padding: 16, paddingBottom: 42 } }, h(RN.View, { style: { flexDirection: "row", marginBottom: 12 } }, h(RN.View, { style: { flex: 1 } }, h(RN.Text, { style: { color: palette().text, fontSize: 22, fontWeight: "800" } }, "Translation history"), h(RN.Text, { style: { color: palette().sub, fontSize: 13, marginTop: 3 } }, rows.length + " shown · " + allRows.length + " saved locally")), h(RN.Text, { style: { color: palette().sub, fontSize: 19, marginTop: 2 } }, "◷")), h(CustomInput, { value: query, placeholder: "Search translations, channels, or languages", onChangeText: setQuery, autoCorrect: false, style: { marginBottom: 14 } }), rows.length ? null : h(RN.Text, { style: { color: palette().sub, fontSize: 14, paddingVertical: 20, textAlign: "center" } }, allRows.length ? "No history entries match this search." : "No translations saved yet."), ...cards);
 }
 function listChannelsForGuild(guild) {
