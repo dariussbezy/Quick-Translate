@@ -895,12 +895,19 @@ function parseLanguageSubtext(label) {
     try {
         if (!markdownParserLookupDone) {
             markdownParserLookupDone = true;
-            markdownParserModule = findByProps("parse", "unparse");
+            markdownParserModule = findByProps("parse", "unparse") || findByProps("parse");
         }
         const parse = markdownParserModule && markdownParserModule.parse;
         if (typeof parse === "function") {
             const nodes = parse.call(markdownParserModule, "-# " + String(label || ""));
-            if (Array.isArray(nodes) && nodes.length)
+            const hasLiteralMarker = (node) => {
+                if (typeof node === "string") return node.includes("-#");
+                if (!node || typeof node !== "object") return false;
+                return (typeof node.content === "string" && node.content.includes("-#")) ||
+                    (Array.isArray(node.content) && node.content.some(hasLiteralMarker)) ||
+                    (node.value && typeof node.value === "object" && hasLiteralMarker(node.value));
+            };
+            if (Array.isArray(nodes) && nodes.length && !nodes.some(hasLiteralMarker))
                 return nodes.map(node => node && typeof node === "object" ? { ...node, __tr: true } : { type: "text", content: String(node || ""), __tr: true });
         }
     } catch (_) {}
