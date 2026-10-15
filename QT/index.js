@@ -907,12 +907,17 @@ function parseLanguageSubtext(label) {
                     (Array.isArray(node.content) && node.content.some(hasLiteralMarker)) ||
                     (node.value && typeof node.value === "object" && hasLiteralMarker(node.value));
             };
-            if (Array.isArray(nodes) && nodes.length && !nodes.some(hasLiteralMarker))
+            // Only trust a real block-level subtext result. A generic parser can
+            // return ordinary text here, which silently loses the -# styling.
+            if (Array.isArray(nodes) && nodes.length && !nodes.some(hasLiteralMarker) &&
+                nodes.some(node => node && typeof node === "object" &&
+                    (node.type === "subtext" || node.type === "small")))
                 return nodes.map(node => node && typeof node === "object" ? { ...node, __tr: true } : { type: "text", content: String(node || ""), __tr: true });
         }
     } catch (_) {}
-    // Keep the label readable without showing raw markdown on builds that hide the parser.
-    return [{ type: "text", content: String(label || ""), color: palette().sub, __tr: true }];
+    // Discord's message AST uses a block-level subtext node for the -# format.
+    // This keeps the label small even when the internal parser module is hidden.
+    return [{ type: "subtext", content: [{ type: "text", content: String(label || ""), __tr: true }], __tr: true }];
 }
 function decorate(row, input) {
     const m = row && row.message;
@@ -946,10 +951,11 @@ function decorate(row, input) {
         ? parseLanguageSubtext(langName(sourceCode) + " → " + langName(String(tr.tl || "")))
         : [];
     const immersive = tr.autoIncoming ? qt.autoIncomingImmersive : (tr.immersive ?? qt.immersive);
+    const lineBreak = () => ({ type: "text", content: "\n", __tr: true });
     if (immersive)
-        out = base.concat([{ type: "text", content: "\n", __tr: true }], sourceHint, paint(text, color));
+        out = base.concat([lineBreak()], sourceHint, sourceHint.length ? [lineBreak()] : [], paint(text, color));
     else
-        out = sourceHint.concat(paint(text, color));
+        out = sourceHint.concat(sourceHint.length ? [lineBreak()] : [], paint(text, color));
     if (!out.length)
         return;
     m.__trBase = base;
@@ -1701,7 +1707,7 @@ function Settings() {
                     { label: "Next to the + button", isMarked: settings.anchor !== "send", onPress: () => savePosition("actions") },
                     { label: "Next to the Send button", isMarked: settings.anchor === "send", onPress: () => savePosition("send") },
                 ] });
-        } }), toggle("Save translation history", "Store translated messages and drafts locally in Translation history.", settings.saveHistory !== false, (v) => settings.updateSettings({ saveHistory: v })), toggle("Hide Gift button", "Hide the Gift button in the chat composer.", !!settings.hideGiftButton, (v) => { settings.updateSettings({ hideGiftButton: v }); toast("Restart Discord to apply this setting"); })), h(RN.View, { style: { marginTop: 18, marginBottom: 12, padding: 16, borderRadius: 15, backgroundColor: C.card, borderWidth: 1, borderColor: C.card2 } }, h(RN.Text, { style: { color: C.text, fontSize: 20, fontWeight: "800", marginBottom: 8 } }, "Quick guide"), h(RN.Text, { style: { color: C.sub, fontSize: 17, lineHeight: 23 } }, "Long-press for message actions. Use the composer button to translate drafts.")), h(RN.Text, { style: { color: C.sub, fontSize: 12, textAlign: "center", marginTop: 1 } }, "Quick Translate " + BUILD));
+        } }), toggle("Save translation history", "Store translated messages and drafts locally in Translation history.", settings.saveHistory !== false, (v) => settings.updateSettings({ saveHistory: v })), toggle("Hide Gift button", "Hide the Gift button in the chat composer.", !!settings.hideGiftButton, (v) => { settings.updateSettings({ hideGiftButton: v }); toast("Restart Discord to apply this setting"); })), h(RN.View, { style: { marginTop: 18, marginBottom: 12, padding: 16, borderRadius: 15, backgroundColor: C.card, borderWidth: 1, borderColor: C.card2 } }, h(RN.Text, { style: { color: C.text, fontSize: 20, fontWeight: "800", marginBottom: 8 } }, "Quick guide"), h(RN.Text, { key: "guide-0", style: { color: C.sub, fontSize: 15, lineHeight: 21, marginTop: 0 } }, "Long-press a message to translate it, view the original, or open translation actions."), h(RN.Text, { key: "guide-1", style: { color: C.sub, fontSize: 15, lineHeight: 21, marginTop: 5 } }, "Use the composer Translate button to translate a draft before sending it."), h(RN.Text, { key: "guide-2", style: { color: C.sub, fontSize: 15, lineHeight: 21, marginTop: 5 } }, "Choose Google Translate or DeepL, then set separate languages for incoming and outgoing messages."), h(RN.Text, { key: "guide-3", style: { color: C.sub, fontSize: 15, lineHeight: 21, marginTop: 5 } }, "Automatic translation can be limited to selected channels and DMs; saved translations return after restart.")), h(RN.Text, { style: { color: C.sub, fontSize: 12, textAlign: "center", marginTop: 1 } }, "Quick Translate " + BUILD));
 }
 /* ------------------------------------------------------------------ */
 /* plugin                                                              */
