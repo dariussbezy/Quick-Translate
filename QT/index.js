@@ -83,7 +83,6 @@ let armed = null;
 let lastChannelId = null;
 let lastOriginal = null;
 let lastOriginalChannelId = null;
-let lastTranslatedText = null;
 let renderErrors = 0;
 let renderUnpatch = null;
 let ThemeStore;
@@ -281,12 +280,12 @@ const LANGUAGE_FLAGS = {
 const languageLabel = (code, name = langName(code)) => (LANGUAGE_FLAGS[code] ? LANGUAGE_FLAGS[code] + "  " : "") + name;
 /* ---- shared settings design kit (identical in AML / GPL / QT) ---- */
 const KIT_TILES = {
-  lang: ["LanguageIcon", "\u6587", "#5865F2"], paint: ["PaintPaletteIcon", "\u25C9", "#EB459E"], time: ["ClockIcon", "\u25F7", "#F0B232"],
+  lang: ["LanguageIcon", "\u6587", "#5865F2"], paint: ["PaintPaletteIcon", "\u25C9", "#EB459E"], time: ["ClockIcon", "\u25F7", "#E58A00"],
   store: ["ClipboardListIcon", "\u25A3", "#3BA55D"], trash: ["TrashIcon", "\u232B", "#ED4245"], edit: ["PencilIcon", "\u270E", "#F07B3E"],
-  shield: ["ShieldIcon", "\u2298", "#80848E"], bell: ["BellIcon", "!", "#F0B232"], at: ["BellIcon", "@", "#ED4245"],
+  shield: ["ShieldIcon", "\u2298", "#80848E"], bell: ["BellIcon", "!", "#E58A00"], at: ["BellIcon", "@", "#ED4245"],
   reply: ["ChatMarkUnreadIcon", "\u21A9", "#5865F2"], search: ["CompassIcon", "\u2315", "#1ABC9C"], chat: ["ChatMarkUnreadIcon", "\u25A4", "#5865F2"],
   plus: ["PlusSmallIcon", "+", "#5865F2"], link: ["LinkIcon", "\u2197", "#3498DB"], test: ["WrenchIcon", "\u25B7", "#9B59B6"],
-  star: ["StarIcon", "\u2605", "#F1C40F"], server: ["PinIcon", "\u25C7", "#3498DB"], power: ["SettingsIcon", "\u25CF", "#43B581"],
+  star: ["StarIcon", "\u2605", "#D99700"], server: ["PinIcon", "\u25C7", "#3498DB"], power: ["SettingsIcon", "\u25CF", "#43B581"],
   text: ["PencilIcon", "Aa", "#F07B3E"], guide: ["ClipboardCheckIcon", "?", "#5865F2"], gear: ["SettingsIcon", "\u2022", "#80848E"]
 };
 const KIT_RULES = [
@@ -302,10 +301,11 @@ const KIT_RULES = [
 ];
 const kitAssetCache = new Map();
 function kitAsset(name) {
-  if (kitAssetCache.has(name)) return kitAssetCache.get(name);
+  const hit = kitAssetCache.get(name);
+  if (hit && (hit.id || Date.now() - hit.at < 5000)) return hit.id;
   let id = null;
   try { const r = globalThis.rain; id = (r && r.api && r.api.assets && r.api.assets.findAssetId && r.api.assets.findAssetId(name)) || null; } catch (_) { id = null; }
-  kitAssetCache.set(name, id);
+  kitAssetCache.set(name, { id, at: Date.now() });
   return id;
 }
 function hexA(hex, a) {
@@ -351,8 +351,11 @@ function CustomRow(p) {
   const C = palette(), h = React.createElement;
   const key = p.__fallbackIcon ? (kitIconKey(p) || "gear") : kitIconKey(p);
   const tile = key ? KitTile({ k: key, size: 34 }) : null;
+  const tr = p.trailing;
+  const flip = !p.onPress && tr && tr.type === CustomSwitch && tr.props && typeof tr.props.onChange === "function" ? () => tr.props.onChange(!tr.props.value) : null;
+  const press = p.onPress || flip;
   return h(RN.Pressable, {
-    accessibilityRole: p.onPress ? "button" : undefined, onPress: p.onPress, disabled: !p.onPress,
+    accessibilityRole: press ? "button" : undefined, onPress: press || undefined, disabled: !press,
     style: ({ pressed }) => ({ minHeight: 66, paddingHorizontal: 16, paddingVertical: 13, flexDirection: "row", alignItems: "center", backgroundColor: pressed ? C.press : "transparent" })
   },
     tile,
@@ -394,11 +397,12 @@ function CustomInput(p) {
     style: [{ minHeight: 50, borderRadius: 14, borderWidth: 1.5, borderColor: focused ? C.blurple : C.card2, backgroundColor: C.bg, color: C.text, paddingHorizontal: 15, fontSize: 16 }, p.style]
   });
 }
+let kitHeroPlayed = false;
 function KitHero(p) {
   const C = palette(), h = React.createElement, accent = p.accent || C.blurple;
   const stats = (p.stats || []).filter(Boolean);
-  const enter = React.useRef(new RN.Animated.Value(0)).current;
-  React.useEffect(() => { RN.Animated.spring(enter, { toValue: 1, speed: 14, bounciness: 6, useNativeDriver: true }).start(); }, []);
+  const enter = React.useRef(new RN.Animated.Value(kitHeroPlayed ? 1 : 0)).current;
+  React.useEffect(() => { if (kitHeroPlayed) return; kitHeroPlayed = true; RN.Animated.spring(enter, { toValue: 1, speed: 14, bounciness: 6, useNativeDriver: true }).start(); }, []);
   return h(RN.Animated.View, { style: { borderRadius: 26, backgroundColor: C.card, borderWidth: 1, borderColor: hexA(accent, 0.4), padding: 18, marginBottom: 24, overflow: "hidden", opacity: enter, transform: [{ scale: enter.interpolate({ inputRange: [0, 1], outputRange: [0.96, 1] }) }] } },
     h(RN.View, { pointerEvents: "none", style: { position: "absolute", top: -60, right: -50, width: 190, height: 190, borderRadius: 95, backgroundColor: hexA(accent, 0.16) } }),
     h(RN.View, { pointerEvents: "none", style: { position: "absolute", bottom: -70, left: -40, width: 140, height: 140, borderRadius: 70, backgroundColor: hexA(accent, 0.08) } }),
@@ -431,12 +435,6 @@ function KitGuide(p) {
           h(RN.Text, { style: { color: C.text, fontSize: 15, fontWeight: "700", marginBottom: 3 } }, s[0]),
           h(RN.Text, { style: { color: C.sub, fontSize: 14, lineHeight: 20 } }, s[1]))))) : null);
 }
-function kitMenuPill(label) {
-  const C = palette(), h = React.createElement;
-  return h(RN.View, { style: { flexDirection: "row", alignItems: "center", backgroundColor: hexA(C.blurple, 0.16), borderRadius: 12, paddingHorizontal: 11, paddingVertical: 7, marginLeft: 6 } },
-    h(RN.Text, { numberOfLines: 1, style: { color: C.text, fontSize: 13, fontWeight: "700", maxWidth: 130 } }, String(label || "Select")),
-    h(RN.View, { style: { marginLeft: 6 } }, KitChevron({ dir: "down", color: C.blurple, size: 7 })));
-}
 /* ---- end shared kit ---- */
 function copyText(text) {
     try {
@@ -452,10 +450,11 @@ function copyText(text) {
 /* ------------------------------------------------------------------ */
 function fetchT(url, opts) {
     let timer;
+    const controller = typeof AbortController === "function" ? new AbortController() : null;
     const clear = () => clearTimeout(timer);
     return Promise.race([
-        fetch(url, opts),
-        new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("Timed out")), TIMEOUT); }),
+        fetch(url, controller ? Object.assign({}, opts, { signal: controller.signal }) : opts),
+        new Promise((_, reject) => { timer = setTimeout(() => { try { if (controller) controller.abort(); } catch (_) { /* ignore */ } reject(new Error("Timed out")); }, TIMEOUT); }),
     ]).then(res => { clear(); return res; }, err => { clear(); throw err; });
 }
 function callApi(provider, text, tl, sl) {
@@ -464,8 +463,8 @@ function callApi(provider, text, tl, sl) {
         if (!key)
             return Promise.reject(new Error("Add your DeepL API key in Quick Translate settings"));
         const endpoint = key.endsWith(":fx") ? "https://api-free.deepl.com/v2/translate" : "https://api.deepl.com/v2/translate";
-        const deeplCode = (code) => code === "zh-CN" || code === "zh-TW" ? "ZH" : code.toUpperCase();
-        const target = tl === "en" ? "EN-US" : tl === "pt" ? "PT-BR" : deeplCode(tl);
+        const deeplCode = (code) => code === "zh-CN" || code === "zh-TW" ? "ZH" : code === "no" ? "NB" : code.toUpperCase();
+        const target = tl === "en" ? "EN-US" : tl === "pt" ? "PT-BR" : tl === "zh-CN" ? "ZH-HANS" : tl === "zh-TW" ? "ZH-HANT" : deeplCode(tl);
         const source = sl && sl !== "auto" ? deeplCode(sl) : undefined;
         const body = { text: [text], target_lang: target };
         if (source)
@@ -521,17 +520,29 @@ function prettyToken(t) {
         return "";
     return t;
 }
+function isWordChar(ch) {
+    return !!ch && (/[0-9_]/.test(ch) || ch.toLowerCase() !== ch.toUpperCase());
+}
 function protect(text) {
     const tokens = [];
-    let out = text.replace(PROTECT, m => { tokens.push(m); return "§" + (tokens.length - 1) + "§"; });
+    const hold = (m) => { tokens.push(m); return "§" + (tokens.length - 1) + "§"; };
+    // Text that already looks like one of our placeholders is kept verbatim.
+    let out = text.replace(/§\s*\d+\s*§/g, hold).replace(PROTECT, hold);
     const words = Array.isArray(qt.protectedWords) ? qt.protectedWords : [];
     for (const raw of words) {
         const word = String(raw || "").trim();
         if (!word)
             continue;
         const escaped = word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-        const pattern = new RegExp("\\b" + escaped + "\\b", "gi");
-        out = out.replace(pattern, m => { tokens.push(m); return "§" + (tokens.length - 1) + "§"; });
+        const first = word[0], last = word[word.length - 1];
+        out = out.replace(new RegExp(escaped, "gi"), (m, offset, whole) => {
+            // Word boundaries only where the word edge is a letter/digit; works for Cyrillic, symbols and CJK.
+            if (isWordChar(first) && isWordChar(whole[offset - 1]))
+                return m;
+            if (isWordChar(last) && isWordChar(whole[offset + m.length]))
+                return m;
+            return hold(m);
+        });
     }
     return { out, tokens };
 }
@@ -740,7 +751,6 @@ function translateCurrentText(tl, sl) {
         if (writeInput(result.text)) {
             lastOriginal = text;
             lastOriginalChannelId = currentChannelId();
-            lastTranslatedText = result.text;
             return true;
         }
         else
@@ -756,7 +766,6 @@ function restoreOriginal() {
     if (writeInput(lastOriginal)) {
         lastOriginal = null;
         lastOriginalChannelId = null;
-        lastTranslatedText = null;
     }
     else
         toast("Could not write to the chat box");
@@ -797,7 +806,6 @@ function patchSend() {
                 if (lastOriginal != null && msg && (String(args[0]) === String(lastOriginalChannelId || "") || currentChannelId() === lastOriginalChannelId)) {
                     lastOriginal = null;
                     lastOriginalChannelId = null;
-                    lastTranslatedText = null;
                 }
                 bridge.text = "";
                 if (oneShotJob && oneShotTranslated) {
@@ -1824,7 +1832,7 @@ function Settings() {
     });
     if (!settings._hasHydrated)
         return h(RN.View, { style: { flex: 1, alignItems: "center", justifyContent: "center", padding: 24 } }, h(RN.Text, { style: { color: C.sub, fontSize: 15 } }, "Loading saved Quick Translate settings…"));
-    return h(RN.ScrollView, { style: { flex: 1 }, contentContainerStyle: { padding: 16, paddingBottom: 42 } }, h(KitHero, { icon: "lang", title: "Quick Translate", subtitle: "Translation preferences for your chats", stats: [["Saved", historyEntries.length], ["Service", settings.provider === "deepl" ? "DeepL" : "Google"], ["Output", langName(settings.targetOut)]] }), h(CustomSection, { title: "Translation service" }, h(CustomRow, { title: "Google Translate", subtitle: "No key required · selected by default", icon: "🌐", last: settings.provider !== "deepl",
+    return h(RN.ScrollView, { style: { flex: 1 }, contentContainerStyle: { padding: 16, paddingBottom: 42 } }, h(KitHero, { icon: "lang", title: "Quick Translate", subtitle: "Translation preferences for your chats", stats: [["Saved", Array.isArray(settings.historyEntries) ? settings.historyEntries.length : 0], ["Service", settings.provider === "deepl" ? "DeepL" : "Google"], ["Output", langName(settings.targetOut)]] }), h(CustomSection, { title: "Translation service" }, h(CustomRow, { title: "Google Translate", subtitle: "No key required · selected by default", icon: "🌐", last: settings.provider !== "deepl",
         trailing: settings.provider !== "deepl" ? h(RN.Text, { style: { color: C.blurple, fontWeight: "800", fontSize: 18 } }, "✓") : null,
         onPress: () => settings.updateSettings({ provider: "google" }) }), h(CustomRow, { title: "DeepL", subtitle: "Uses your personal API key · Google fallback", icon: "✦", last: settings.provider === "deepl",
         trailing: settings.provider === "deepl" ? h(RN.Text, { style: { color: C.blurple, fontWeight: "800", fontSize: 18 } }, "✓") : null,
@@ -1994,7 +2002,6 @@ function onChannelSelect(e) {
     if (lastOriginalChannelId && lastOriginalChannelId !== id) {
         lastOriginal = null;
         lastOriginalChannelId = null;
-        lastTranslatedText = null;
     }
     if (bulkSelectionRequest && id !== bulkSelectionRequest.channelId) {
         bulkSelectionRequest = null;
@@ -2057,7 +2064,6 @@ exports.default = {
         armed = null;
         lastOriginal = null;
         lastOriginalChannelId = null;
-        lastTranslatedText = null;
     },
     settings: Settings,
 };
