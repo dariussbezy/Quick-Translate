@@ -339,7 +339,17 @@ function CustomSection(p) {
   const C = palette(), h = React.createElement;
   const kids = React.Children.toArray(p.children);
   const any = kids.some((k) => k && k.type === CustomRow && kitIconKey(k.props));
-  const out = kids.map((k) => (k && k.type === CustomRow && any && !k.props.noIcon && !kitIconKey(k.props)) ? React.cloneElement(k, { __fallbackIcon: true }) : k);
+  const isAction = (k) => !!k && k.type === CustomAction;
+  if (kids.length && kids.every(isAction)) {
+    return h(RN.View, { style: { marginBottom: p.title ? 24 : 12 } },
+      p.title ? h(RN.View, { style: { flexDirection: "row", alignItems: "center", marginHorizontal: 6, marginBottom: 10 } },
+        h(RN.View, { style: { width: 3, height: 14, borderRadius: 2, backgroundColor: C.blurple, marginRight: 8 } }),
+        h(RN.Text, { numberOfLines: 1, style: { color: C.text, fontSize: 15, fontWeight: "700", flexShrink: 1 } }, p.title)) : null,
+      ...kids.map((k, i) => React.cloneElement(k, { top: i === 0 ? 0 : 10 })));
+  }
+  const out = kids.map((k, i) => isAction(k)
+    ? h(RN.View, { key: "act-" + i, style: { paddingHorizontal: 12, paddingTop: i === 0 ? 12 : 0, paddingBottom: 12 } }, React.cloneElement(k, { top: 0 }))
+    : (k && k.type === CustomRow && any && !k.props.noIcon && !kitIconKey(k.props)) ? React.cloneElement(k, { __fallbackIcon: true }) : k);
   return h(RN.View, { style: { marginBottom: p.compact ? 14 : 24 } },
     p.title ? h(RN.View, { style: { flexDirection: "row", alignItems: "center", marginHorizontal: 6, marginBottom: 10 } },
       h(RN.View, { style: { width: 3, height: 14, borderRadius: 2, backgroundColor: C.blurple, marginRight: 8 } }),
@@ -351,11 +361,8 @@ function CustomRow(p) {
   const C = palette(), h = React.createElement;
   const key = p.__fallbackIcon ? (kitIconKey(p) || "gear") : kitIconKey(p);
   const tile = key ? KitTile({ k: key, size: 34 }) : null;
-  const tr = p.trailing;
-  const flip = !p.onPress && tr && tr.type === CustomSwitch && tr.props && typeof tr.props.onChange === "function" ? () => tr.props.onChange(!tr.props.value) : null;
-  const press = p.onPress || flip;
   return h(RN.Pressable, {
-    accessibilityRole: press ? "button" : undefined, onPress: press || undefined, disabled: !press,
+    accessibilityRole: p.onPress ? "button" : undefined, onPress: p.onPress, disabled: !p.onPress,
     style: ({ pressed }) => ({ minHeight: 66, paddingHorizontal: 16, paddingVertical: 13, flexDirection: "row", alignItems: "center", backgroundColor: pressed ? C.press : "transparent" })
   },
     tile,
@@ -368,14 +375,12 @@ function CustomRow(p) {
 function CustomSwitch(p) {
   const C = palette(), h = React.createElement, on = !!p.value;
   const pos = React.useRef(new RN.Animated.Value(on ? 1 : 0)).current;
-  const col = React.useRef(new RN.Animated.Value(on ? 1 : 0)).current;
   React.useEffect(() => {
     RN.Animated.spring(pos, { toValue: on ? 1 : 0, speed: 24, bounciness: 5, useNativeDriver: true }).start();
-    RN.Animated.timing(col, { toValue: on ? 1 : 0, duration: 180, useNativeDriver: false }).start();
   }, [on]);
-  return h(RN.Pressable, { accessibilityRole: "switch", accessibilityState: { checked: on }, onPress: () => p.onChange(!on), hitSlop: 10 },
-    h(RN.Animated.View, { style: { width: 52, height: 32, borderRadius: 16, padding: 3, justifyContent: "center", backgroundColor: col.interpolate({ inputRange: [0, 1], outputRange: [C.off, p.color || C.blurple] }) } },
-      h(RN.Animated.View, { style: { width: 26, height: 26, borderRadius: 13, backgroundColor: "#FFFFFF", shadowColor: "#000000", shadowOpacity: 0.25, shadowRadius: 3, shadowOffset: { width: 0, height: 1 }, elevation: 2, transform: [{ translateX: pos.interpolate({ inputRange: [0, 1], outputRange: [0, 20] }) }] } })));
+  return h(RN.Pressable, { accessibilityRole: "switch", accessibilityState: { checked: on }, onPress: () => p.onChange(!on), hitSlop: 10,
+    style: { width: 52, height: 32, borderRadius: 16, padding: 3, justifyContent: "center", backgroundColor: on ? (p.color || C.blurple) : C.off } },
+    h(RN.Animated.View, { style: { width: 26, height: 26, borderRadius: 13, backgroundColor: "#FFFFFF", shadowColor: "#000000", shadowOpacity: 0.25, shadowRadius: 3, shadowOffset: { width: 0, height: 1 }, elevation: 2, transform: [{ translateX: pos.interpolate({ inputRange: [0, 1], outputRange: [0, 20] }) }] } }));
 }
 function CustomAction(p) {
   const C = palette(), h = React.createElement, RED_ = "#ED4245";
@@ -384,8 +389,8 @@ function CustomAction(p) {
   const bg = p.danger ? (p.secondary ? hexA(RED_, 0.14) : RED_) : (p.secondary ? C.chip : C.blurple);
   const fg = p.danger && p.secondary ? RED_ : (p.secondary ? C.text : "#FFFFFF");
   return h(RN.Pressable, { onPress: p.onPress, disabled: p.disabled, onPressIn: () => to(0.97), onPressOut: () => to(1), accessibilityRole: "button" },
-    h(RN.Animated.View, { style: { minHeight: 50, borderRadius: 15, alignItems: "center", justifyContent: "center", paddingHorizontal: 18, marginTop: 10, backgroundColor: bg, opacity: p.disabled ? 0.45 : 1, transform: [{ scale: sc }] } },
-      h(RN.Text, { style: { color: fg, fontWeight: "700", fontSize: 16 } }, p.title)));
+    h(RN.Animated.View, { style: { minHeight: p.compact ? 42 : 50, borderRadius: 15, alignItems: "center", justifyContent: "center", paddingHorizontal: p.compact ? 12 : 18, marginTop: p.top != null ? p.top : 10, backgroundColor: bg, opacity: p.disabled ? 0.45 : 1, transform: [{ scale: sc }] } },
+      h(RN.Text, { numberOfLines: 1, style: { color: fg, fontWeight: "700", fontSize: p.compact ? 15 : 16 } }, p.title)));
 }
 function CustomInput(p) {
   const C = palette(), h = React.createElement;
@@ -1328,7 +1333,7 @@ function TranslateButton(props) {
     const translateSendMode = props.position === "send" && !!armed && settings.draftBeforeSend !== false;
     const highlightedTranslate = translateSendMode && settings.highlightDraftButton !== false;
     const icon = iconId
-        ? h(RN.Image, { source: iconId, style: { width: 23, height: 23, tintColor: highlightedTranslate ? "#FFFFFF" : armed ? ACCENT : C.sub } })
+        ? h(RN.Image, { source: iconId, style: { width: translateSendMode ? 20 : 22, height: translateSendMode ? 20 : 22, tintColor: highlightedTranslate ? "#FFFFFF" : armed ? ACCENT : C.sub } })
         : h(RN.Text, { style: { fontSize: 20, textAlign: "center", color: highlightedTranslate ? "#FFFFFF" : armed ? ACCENT : C.sub } }, "\uD83C\uDF10");
     const onPress = () => {
         if (didLongPress.current) {
@@ -1512,7 +1517,11 @@ function TranslateButton(props) {
                 } })))),
             panelPage === "target" ? h(CustomAction, { key: "confirm-target", title: "Confirm " + langName(target), onPress: confirmTargetLanguage }) : null,
         ];
-    return h(RN.View, { pointerEvents: "box-none", collapsable: false, style: { width: 40, height: 40, marginRight: 4, alignSelf: "center", flexShrink: 0 } }, h(RN.Animated.View, {
+    const look = sendButtonLook || {};
+    const dim = translateSendMode
+        ? { w: Number(look.width) || 36, h: Number(look.height) || 36, r: look.borderRadius != null ? look.borderRadius : 10, bg: look.backgroundColor || paletteNow.blurple, mr: 0, mv: 0 }
+        : { w: 36, h: 36, r: 10, bg: paletteNow.blurple, mr: 2, mv: -6 };
+    return h(RN.View, { pointerEvents: "box-none", collapsable: false, style: { width: dim.w, height: dim.h, marginRight: dim.mr, marginVertical: dim.mv, alignSelf: "center", flexShrink: 0 } }, h(RN.Animated.View, {
         onStartShouldSetResponder: () => !busy,
         onResponderTerminationRequest: () => false,
         onResponderGrant: startPress,
@@ -1527,11 +1536,32 @@ function TranslateButton(props) {
         accessibilityHint: "Tap to activate or translate the draft; hold for language and draft options",
         accessibilityActions: [{ name: "activate", label: "Translate" }],
         onAccessibilityTap: onPress,
-        style: { width: 40, height: 40, borderRadius: 13, backgroundColor: highlightedTranslate ? paletteNow.blurple : "transparent", alignItems: "center", justifyContent: "center", opacity: busy ? 0.5 : 1, transform: [{ scale: buttonScale }] },
+        style: { width: dim.w, height: dim.h, borderRadius: dim.r, backgroundColor: highlightedTranslate ? dim.bg : "transparent", alignItems: "center", justifyContent: "center", opacity: busy ? 0.5 : 1, transform: [{ scale: buttonScale }] },
     }, icon), panelOpen ? h(RN.Modal, { visible: true, transparent: true, animationType: "none", onRequestClose: closePanel }, h(RN.View, { style: { flex: 1, justifyContent: "flex-end" } }, h(RN.Animated.View, { pointerEvents: "box-none", style: { position: "absolute", top: 0, bottom: 0, left: 0, right: 0, backgroundColor: "rgba(0,0,0,0.52)", opacity: backdropProgress } }, h(RN.Pressable, { style: { flex: 1 }, onPress: closePanel })), h(RN.Animated.View, {
         style: { maxHeight: "88%", backgroundColor: paletteNow.bg, borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingHorizontal: 16, paddingTop: 14, paddingBottom: 28,
             transform: [{ translateY: sheetProgress.interpolate({ inputRange: [0, 1], outputRange: [sheetTravel, 0] }) }] },
     }, h(RN.View, { ...sheetPanResponder.panHandlers, accessibilityLabel: "Drag down to close translate menu", accessibilityHint: "Swipe down to dismiss", style: { height: 44, marginBottom: 10, flexDirection: "row", alignItems: "center", justifyContent: "center" } }, h(RN.View, { style: { width: 72, height: 44, alignItems: "center", justifyContent: "center" } }, h(RN.View, { style: { width: 38, height: 5, borderRadius: 3, backgroundColor: paletteNow.off } })), h(RN.Pressable, { onPress: closePanel, accessibilityRole: "button", accessibilityLabel: "Close translate menu", hitSlop: 10, style: { position: "absolute", top: 0, right: 0, width: 38, height: 38, borderRadius: 19, backgroundColor: paletteNow.chip, alignItems: "center", justifyContent: "center" } }, h(RN.Text, { style: { color: paletteNow.text, fontSize: 24, lineHeight: 28, fontWeight: "500" } }, String.fromCharCode(215)))), panelPage === "main" ? h(RN.ScrollView, { keyboardShouldPersistTaps: "handled", showsVerticalScrollIndicator: false, style: { flexShrink: 1 }, contentContainerStyle: { paddingBottom: 8 } }, ...panelBody) : h(RN.ScrollView, { keyboardShouldPersistTaps: "handled" }, ...panelBody)))) : null, bulkSelectionRequest ? h(BulkMessageSelector, { key: bulkSelectionRequest.nonce, request: bulkSelectionRequest, onClose: () => { bulkSelectionRequest = null; notifyButton(); } }) : null);
+}
+let sendButtonLook = null;
+function readButtonLook(node, depth) {
+    if (!node || typeof node !== "object" || depth > 4)
+        return null;
+    try {
+        const props = node.props;
+        if (props && props.style && typeof props.style !== "function") {
+            const flat = RN.StyleSheet.flatten(props.style);
+            if (flat && flat.backgroundColor && (flat.width || flat.height) && flat.borderRadius != null)
+                return flat;
+        }
+        const kids = props && props.children;
+        for (const kid of Array.isArray(kids) ? kids : kids ? [kids] : []) {
+            const found = readButtonLook(kid, depth + 1);
+            if (found)
+                return found;
+        }
+    }
+    catch (_) { /* ignore */ }
+    return null;
 }
 function patchChatButton() {
     const h = React.createElement;
@@ -1553,16 +1583,16 @@ function patchChatButton() {
                 return ret;
             return h(RN.View, { pointerEvents: "box-none", collapsable: false, style: { flexDirection: "row", alignItems: "center", overflow: "visible" } }, ret, h(TranslateButton, { key: "qt-button-actions", position: "actions" }));
         }));
-    if (rightActions?.type)
-        unpatches.push(after("render", rightActions.type, (_, ret) => {
-            if (!React.isValidElement(ret))
-                return ret;
-            return React.cloneElement(ret, { style: [ret.props?.style, { alignItems: "center", alignSelf: "center" }] });
-        }));
     if (sendButton?.type)
         unpatches.push(after("render", sendButton.type, (_, ret) => {
             if (!ret)
                 return ret;
+            try {
+                const look = readButtonLook(ret, 0);
+                if (look)
+                    sendButtonLook = look;
+            }
+            catch (_) { /* ignore */ }
             return h(ComposerSendSlot, { button: h(TranslateButton, { key: "qt-button-send", position: "send" }), children: ret });
         }));
 }
@@ -1966,6 +1996,14 @@ function migrateSettings() {
             keepMessageTranslations: stored.keepMessageTranslations !== false,
             messageTranslations: oldMessageTranslations.slice(0, MAX_TRANSLATIONS),
             settingsVersion: 12,
+        });
+        stored = useQuickTranslate.getState();
+    }
+    if (stored.settingsVersion < 13) {
+        stored.updateSettings({
+            immersive: true, autoIncomingImmersive: true, showButton: true, draftBeforeSend: true, highlightDraftButton: true,
+            rememberLanguagesPerChat: true, keepArmed: true, saveHistory: true, hideGiftButton: true,
+            settingsVersion: 13,
         });
         stored = useQuickTranslate.getState();
     }
