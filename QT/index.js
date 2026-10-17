@@ -42,7 +42,7 @@ const COLOR_PRESETS = [
     ["Default", ACCENT], ["Red", "#ED4245"], ["Orange", "#F07B3E"], ["Gold", "#F1C40F"], ["Green", "#43B581"],
     ["Teal", "#1ABC9C"], ["Blue", "#3498DB"], ["Indigo", "#5865F2"], ["Purple", "#9B59B6"], ["Pink", "#EB459E"], ["Gray", "#80848E"],
 ];
-const { useStore: useQuickTranslate, settings: qt } = createPluginStore("quicktranslate", {
+const { useStore: useQuickTranslate } = createPluginStore("quicktranslate", {
     settingsVersion: 0,
     targetOut: "en",
     targetIn: "en",
@@ -70,6 +70,10 @@ const { useStore: useQuickTranslate, settings: qt } = createPluginStore("quicktr
     keepMessageTranslations: true,
     messageTranslations: [],
 });
+const qt = new Proxy(Object.create(null), {
+    get(_target, prop) { return Reflect.get(useQuickTranslate.getState(), prop); },
+});
+const updateQuickTranslateSettings = (patch) => useQuickTranslate.getState().updateSettings(patch);
 const translations = new Map();
 const cache = new Map();
 const inFlight = new Map();
@@ -83,6 +87,7 @@ let armed = null;
 let lastChannelId = null;
 let lastOriginal = null;
 let lastOriginalChannelId = null;
+let lastTranslatedText = null;
 let renderErrors = 0;
 let renderUnpatch = null;
 let ThemeStore;
@@ -278,169 +283,44 @@ const LANGUAGE_FLAGS = {
     ur: "🇵🇰", ms: "🇲🇾", sw: "🇰🇪", af: "🇿🇦", tl: "🇵🇭", is: "🇮🇸", ga: "🇮🇪",
 };
 const languageLabel = (code, name = langName(code)) => (LANGUAGE_FLAGS[code] ? LANGUAGE_FLAGS[code] + "  " : "") + name;
-/* ---- shared settings design kit (identical in AML / GPL / QT) ---- */
-const KIT_TILES = {
-  lang: ["LanguageIcon", "\u6587", "#5865F2"], paint: ["PaintPaletteIcon", "\u25C9", "#EB459E"], time: ["ClockIcon", "\u25F7", "#E58A00"],
-  store: ["ClipboardListIcon", "\u25A3", "#3BA55D"], trash: ["TrashIcon", "\u232B", "#ED4245"], edit: ["PencilIcon", "\u270E", "#F07B3E"],
-  shield: ["ShieldIcon", "\u2298", "#80848E"], bell: ["BellIcon", "!", "#E58A00"], at: ["BellIcon", "@", "#ED4245"],
-  reply: ["ChatMarkUnreadIcon", "\u21A9", "#5865F2"], search: ["CompassIcon", "\u2315", "#1ABC9C"], chat: ["ChatMarkUnreadIcon", "\u25A4", "#5865F2"],
-  plus: ["PlusSmallIcon", "+", "#5865F2"], link: ["LinkIcon", "\u2197", "#3498DB"], test: ["WrenchIcon", "\u25B7", "#9B59B6"],
-  star: ["StarIcon", "\u2605", "#D99700"], server: ["PinIcon", "\u25C7", "#3498DB"], power: ["SettingsIcon", "\u25CF", "#43B581"],
-  text: ["PencilIcon", "Aa", "#F07B3E"], guide: ["ClipboardCheckIcon", "?", "#5865F2"], gear: ["SettingsIcon", "\u2022", "#80848E"]
-};
-const KIT_RULES = [
-  [/^(default|red|orange|gold|green|teal|blue|indigo|purple|pink|gray)$/i, null],
-  [/^ghost ping logger$/i, "power"], [/color|appearance/, "paint"], [/notify|alert|toast/, "bell"], [/test/, "test"],
-  [/button|position|composer/, "plus"], [/clear|remove/, "trash"],
-  [/clock|time|history|retention|keep .* for/, "time"], [/quick|favorite|saved/, "star"],
-  [/cache|storage|persist|remember|restart|across/, "store"],
-  [/deleted|delete/, "trash"], [/edit/, "edit"], [/ignore/, "shield"], [/mention|everyone|ping/, "at"],
-  [/reply|replies/, "reply"], [/filter|search/, "search"], [/jump/, "link"],
-  [/translate|translation|google|deepl|language/, "lang"], [/word|term/, "text"], [/server|guild/, "server"],
-  [/capture|message|channel|dm/, "chat"], [/enabled|logger/, "power"]
-];
-const kitAssetCache = new Map();
-function kitAsset(name) {
-  const hit = kitAssetCache.get(name);
-  if (hit && (hit.id || Date.now() - hit.at < 5000)) return hit.id;
-  let id = null;
-  try { const r = globalThis.rain; id = (r && r.api && r.api.assets && r.api.assets.findAssetId && r.api.assets.findAssetId(name)) || null; } catch (_) { id = null; }
-  kitAssetCache.set(name, { id, at: Date.now() });
-  return id;
-}
-function hexA(hex, a) {
-  const m = /^#([0-9a-f]{6})$/i.exec(String(hex || ""));
-  if (!m) return hex;
-  const n = Math.round(a * 255).toString(16);
-  return "#" + m[1] + (n.length < 2 ? "0" + n : n);
+function CustomSection(props) {
+    const h = React.createElement;
+    const C = palette();
+    return h(RN.View, { style: { marginBottom: props.compact ? 14 : 22 } }, h(RN.Text, { style: { color: C.sub, fontSize: 13, fontWeight: "700", letterSpacing: 0.4, marginHorizontal: 5, marginBottom: 9, textTransform: "uppercase" } }, props.title), h(RN.View, { style: { backgroundColor: C.card, borderRadius: 17, overflow: "hidden", borderWidth: 1, borderColor: C.card2 } }, props.children));
 }
 function settingIconForTitle(title) {
-  const text = String(title || "").toLowerCase();
-  const match = KIT_RULES.find(([pattern]) => pattern.test(text));
-  return match ? match[1] : null;
+    const text = String(title || "").toLowerCase();
+    const rules = [
+        [/translate|translation|google|deepl/, "↔"], [/language/, "文"], [/color|appearance/, "◉"],
+        [/clock|time|history|retention/, "◷"], [/cache|storage|persist|remember|restart/, "▣"],
+        [/deleted|delete/, "⌫"], [/edit/, "✎"], [/ignore/, "⊘"], [/mention|everyone|ping/, "@"],
+        [/reply/, "↩"], [/filter|search/, "⌕"], [/capture|message|channel|dm/, "▤"],
+        [/alert|notify|toast/, "!"], [/button|position|composer/, "+"], [/word|term/, "Aa"],
+        [/jump/, "↗"], [/test/, "▷"], [/server|guild/, "◇"], [/bot/, "◆"],
+        [/quick|favorite|saved/, "★"], [/clear|remove/, "×"], [/enabled|logger/, "●"]
+    ];
+    const match = rules.find(([pattern]) => pattern.test(text));
+    return match ? match[1] : "•";
 }
-function kitIconKey(p) {
-  if (!p || p.noIcon) return null;
-  if (p.icon && KIT_TILES[p.icon]) return p.icon;
-  return settingIconForTitle(p.title);
+function CustomRow(props){const C=palette(),h=React.createElement,icon=props.icon||settingIconForTitle(props.title);return h(RN.Pressable,{accessibilityRole:props.onPress?"button":undefined,onPress:props.onPress,disabled:!props.onPress,style:({pressed})=>({minHeight:58,paddingHorizontal:15,paddingVertical:12,flexDirection:"row",alignItems:"center",backgroundColor:pressed?C.press:"transparent"})},icon?h(RN.Text,{style:{width:30,fontSize:18,color:C.sub,marginRight:7,textAlign:"center"}},icon):null,h(RN.View,{style:{flex:1,minWidth:0,paddingRight:8}},h(RN.Text,{numberOfLines:1,style:{color:C.text,fontSize:16,fontWeight:"600"}},props.title),props.subtitle?h(RN.Text,{numberOfLines:2,style:{color:C.sub,fontSize:13,marginTop:3,lineHeight:18}},props.subtitle):null),props.trailing||null,!props.last?h(RN.View,{style:{position:"absolute",bottom:0,left:icon?52:15,right:0,height:1,backgroundColor:C.card2}}):null);}
+function CustomSwitch(props) {
+    const h = React.createElement;
+    const C = palette();
+    const on = !!props.value;
+    const position = React.useRef(new RN.Animated.Value(on ? 1 : 0)).current;
+    React.useEffect(() => { RN.Animated.spring(position, { toValue: on ? 1 : 0, speed: 22, bounciness: 3, useNativeDriver: true }).start(); }, [on]);
+    return h(RN.Pressable, { accessibilityRole: "switch", accessibilityState: { checked: on }, onPress: () => props.onChange(!on), hitSlop: 8, style: { width: 48, height: 29, borderRadius: 16, padding: 3, justifyContent: "center", backgroundColor: on ? C.blurple : C.off } }, h(RN.Animated.View, { style: { width: 23, height: 23, borderRadius: 12, backgroundColor: "#FFFFFF", elevation: 1, transform: [{ translateX: position.interpolate({ inputRange: [0, 1], outputRange: [0, 19] }) }] } }));
 }
-function KitChevron(p) {
-  const h = React.createElement, s = p.size || 8, deg = p.dir === "up" ? "225deg" : p.dir === "right" ? "-45deg" : "45deg";
-  return h(RN.View, { style: { width: s, height: s, borderRightWidth: 2, borderBottomWidth: 2, borderColor: p.color, borderRadius: 1, transform: [{ rotate: deg }], marginTop: p.dir === "up" ? 3 : p.dir === "down" ? -3 : 0, marginHorizontal: 3 } });
+function CustomAction(props) {
+    const h = React.createElement;
+    const C = palette();
+    return h(RN.Pressable, { onPress: props.onPress, disabled: props.disabled, style: ({ pressed }) => ({ minHeight: 48, borderRadius: 13, alignItems: "center", justifyContent: "center", paddingHorizontal: 16, marginTop: 9, backgroundColor: props.secondary ? C.chip : C.blurple, opacity: props.disabled ? 0.45 : pressed ? 0.75 : 1 }) }, h(RN.Text, { style: { color: "#FFFFFF", fontWeight: "700", fontSize: 16 } }, props.title));
 }
-function KitTile(p) {
-  const h = React.createElement, t = KIT_TILES[p.k] || KIT_TILES.gear, size = p.size || 32, asset = kitAsset(t[0]);
-  const inner = Math.round(size * 0.56);
-  return h(RN.View, { style: { width: size, height: size, borderRadius: Math.round(size * 0.3), backgroundColor: t[2], alignItems: "center", justifyContent: "center", marginRight: p.noMargin ? 0 : 13 } },
-    asset ? h(RN.Image, { source: asset, resizeMode: "contain", style: { width: inner, height: inner, tintColor: "#FFFFFF" } })
-      : h(RN.Text, { style: { color: "#FFFFFF", fontSize: Math.round(size * 0.5), fontWeight: "700" } }, t[1]));
+function CustomInput(props) {
+    const h = React.createElement;
+    const C = palette();
+    return h(RN.TextInput, { ...props, placeholderTextColor: C.sub, style: [{ minHeight: 48, borderRadius: 13, borderWidth: 1, borderColor: C.off, backgroundColor: C.bg, color: C.text, paddingHorizontal: 14, fontSize: 16 }, props.style] });
 }
-function CustomSection(p) {
-  const C = palette(), h = React.createElement;
-  const kids = React.Children.toArray(p.children);
-  const any = kids.some((k) => k && k.type === CustomRow && kitIconKey(k.props));
-  const isAction = (k) => !!k && k.type === CustomAction;
-  if (kids.length && kids.every(isAction)) {
-    return h(RN.View, { style: { marginBottom: p.title ? 24 : 12 } },
-      p.title ? h(RN.View, { style: { flexDirection: "row", alignItems: "center", marginHorizontal: 6, marginBottom: 10 } },
-        h(RN.View, { style: { width: 3, height: 14, borderRadius: 2, backgroundColor: C.blurple, marginRight: 8 } }),
-        h(RN.Text, { numberOfLines: 1, style: { color: C.text, fontSize: 15, fontWeight: "700", flexShrink: 1 } }, p.title)) : null,
-      ...kids.map((k, i) => React.cloneElement(k, { top: i === 0 ? 0 : 10 })));
-  }
-  const out = kids.map((k, i) => isAction(k)
-    ? h(RN.View, { key: "act-" + i, style: { paddingHorizontal: 12, paddingTop: i === 0 ? 12 : 0, paddingBottom: 12 } }, React.cloneElement(k, { top: 0 }))
-    : (k && k.type === CustomRow && any && !k.props.noIcon && !kitIconKey(k.props)) ? React.cloneElement(k, { __fallbackIcon: true }) : k);
-  return h(RN.View, { style: { marginBottom: p.compact ? 14 : 24 } },
-    p.title ? h(RN.View, { style: { flexDirection: "row", alignItems: "center", marginHorizontal: 6, marginBottom: 10 } },
-      h(RN.View, { style: { width: 3, height: 14, borderRadius: 2, backgroundColor: C.blurple, marginRight: 8 } }),
-      h(RN.Text, { numberOfLines: 1, style: { color: C.text, fontSize: 15, fontWeight: "700", letterSpacing: 0.1, flexShrink: 1 } }, p.title)) : null,
-    h(RN.View, { style: { backgroundColor: C.card, borderRadius: 20, overflow: "hidden", borderWidth: 1, borderColor: C.card2 } }, ...out),
-    p.footer ? h(RN.Text, { style: { color: C.sub, fontSize: 12, lineHeight: 17, marginHorizontal: 8, marginTop: 8 } }, p.footer) : null);
-}
-function CustomRow(p) {
-  const C = palette(), h = React.createElement;
-  const key = p.__fallbackIcon ? (kitIconKey(p) || "gear") : kitIconKey(p);
-  const tile = key ? KitTile({ k: key, size: 34 }) : null;
-  return h(RN.Pressable, {
-    accessibilityRole: p.onPress ? "button" : undefined, onPress: p.onPress, disabled: !p.onPress,
-    style: ({ pressed }) => ({ minHeight: 66, paddingHorizontal: 16, paddingVertical: 13, flexDirection: "row", alignItems: "center", backgroundColor: pressed ? C.press : "transparent" })
-  },
-    tile,
-    h(RN.View, { style: { flex: 1, minWidth: 0, paddingRight: 10 } },
-      h(RN.Text, { numberOfLines: 2, style: { color: C.text, fontSize: 16, fontWeight: "600", lineHeight: 21 } }, p.title),
-      p.subtitle ? h(RN.Text, { numberOfLines: 3, style: { color: C.sub, fontSize: 13, marginTop: 3, lineHeight: 18 } }, p.subtitle) : null),
-    p.trailing || null,
-    !p.last ? h(RN.View, { style: { position: "absolute", bottom: 0, left: key ? 63 : 16, right: 0, height: 1, backgroundColor: C.card2 } }) : null);
-}
-function CustomSwitch(p) {
-  const C = palette(), h = React.createElement, on = !!p.value;
-  const pos = React.useRef(new RN.Animated.Value(on ? 1 : 0)).current;
-  React.useEffect(() => {
-    RN.Animated.spring(pos, { toValue: on ? 1 : 0, speed: 24, bounciness: 5, useNativeDriver: true }).start();
-  }, [on]);
-  return h(RN.Pressable, { accessibilityRole: "switch", accessibilityState: { checked: on }, onPress: () => p.onChange(!on), hitSlop: 10,
-    style: { width: 52, height: 32, borderRadius: 16, padding: 3, justifyContent: "center", backgroundColor: on ? (p.color || C.blurple) : C.off } },
-    h(RN.Animated.View, { style: { width: 26, height: 26, borderRadius: 13, backgroundColor: "#FFFFFF", shadowColor: "#000000", shadowOpacity: 0.25, shadowRadius: 3, shadowOffset: { width: 0, height: 1 }, elevation: 2, transform: [{ translateX: pos.interpolate({ inputRange: [0, 1], outputRange: [0, 20] }) }] } }));
-}
-function CustomAction(p) {
-  const C = palette(), h = React.createElement, RED_ = "#ED4245";
-  const sc = React.useRef(new RN.Animated.Value(1)).current;
-  const to = (v) => RN.Animated.spring(sc, { toValue: v, speed: 40, bounciness: 0, useNativeDriver: true }).start();
-  const bg = p.danger ? (p.secondary ? hexA(RED_, 0.14) : RED_) : (p.secondary ? C.chip : C.blurple);
-  const fg = p.danger && p.secondary ? RED_ : (p.secondary ? C.text : "#FFFFFF");
-  return h(RN.Pressable, { onPress: p.onPress, disabled: p.disabled, onPressIn: () => to(0.97), onPressOut: () => to(1), accessibilityRole: "button" },
-    h(RN.Animated.View, { style: { minHeight: p.compact ? 42 : 50, borderRadius: 15, alignItems: "center", justifyContent: "center", paddingHorizontal: p.compact ? 12 : 18, marginTop: p.top != null ? p.top : 10, backgroundColor: bg, opacity: p.disabled ? 0.45 : 1, transform: [{ scale: sc }] } },
-      h(RN.Text, { numberOfLines: 1, style: { color: fg, fontWeight: "700", fontSize: p.compact ? 15 : 16 } }, p.title)));
-}
-function CustomInput(p) {
-  const C = palette(), h = React.createElement;
-  const [focused, setFocused] = React.useState(false);
-  return h(RN.TextInput, {
-    ...p, placeholderTextColor: C.sub, underlineColorAndroid: "transparent", textAlignVertical: p.multiline ? "top" : "center",
-    onFocus: (e) => { setFocused(true); if (p.onFocus) p.onFocus(e); },
-    onBlur: (e) => { setFocused(false); if (p.onBlur) p.onBlur(e); },
-    style: [{ minHeight: 50, borderRadius: 14, borderWidth: 1.5, borderColor: focused ? C.blurple : C.card2, backgroundColor: C.bg, color: C.text, paddingHorizontal: 15, fontSize: 16 }, p.style]
-  });
-}
-let kitHeroPlayed = false;
-function KitHero(p) {
-  const C = palette(), h = React.createElement, accent = p.accent || C.blurple;
-  const stats = (p.stats || []).filter(Boolean);
-  const enter = React.useRef(new RN.Animated.Value(kitHeroPlayed ? 1 : 0)).current;
-  React.useEffect(() => { if (kitHeroPlayed) return; kitHeroPlayed = true; RN.Animated.spring(enter, { toValue: 1, speed: 14, bounciness: 6, useNativeDriver: true }).start(); }, []);
-  return h(RN.Animated.View, { style: { borderRadius: 26, backgroundColor: C.card, borderWidth: 1, borderColor: hexA(accent, 0.4), padding: 18, marginBottom: 24, overflow: "hidden", opacity: enter, transform: [{ scale: enter.interpolate({ inputRange: [0, 1], outputRange: [0.96, 1] }) }] } },
-    h(RN.View, { pointerEvents: "none", style: { position: "absolute", top: -60, right: -50, width: 190, height: 190, borderRadius: 95, backgroundColor: hexA(accent, 0.16) } }),
-    h(RN.View, { pointerEvents: "none", style: { position: "absolute", bottom: -70, left: -40, width: 140, height: 140, borderRadius: 70, backgroundColor: hexA(accent, 0.08) } }),
-    h(RN.View, { style: { flexDirection: "row", alignItems: "center" } },
-      KitTile({ k: p.icon, size: 54, noMargin: true }),
-      h(RN.View, { style: { flex: 1, marginLeft: 14 } },
-        h(RN.Text, { numberOfLines: 2, style: { color: C.text, fontSize: 21, fontWeight: "800", letterSpacing: -0.2 } }, p.title),
-        p.subtitle ? h(RN.Text, { numberOfLines: 2, style: { color: C.sub, fontSize: 14, marginTop: 3, lineHeight: 19 } }, p.subtitle) : null)),
-    stats.length ? h(RN.View, { style: { flexDirection: "row", marginTop: 16 } }, ...stats.map((s, i) =>
-      h(RN.View, { key: "stat-" + i, style: { flex: 1, borderRadius: 15, backgroundColor: C.chip, paddingVertical: 11, paddingHorizontal: 12, marginRight: i === stats.length - 1 ? 0 : 8 } },
-        h(RN.Text, { numberOfLines: 1, adjustsFontSizeToFit: true, style: { color: C.text, fontSize: 19, fontWeight: "800" } }, String(s[1])),
-        h(RN.Text, { numberOfLines: 1, style: { color: C.sub, fontSize: 12, marginTop: 2, fontWeight: "600" } }, s[0])))) : null);
-}
-function KitGuide(p) {
-  const C = palette(), h = React.createElement;
-  const [open, setOpen] = React.useState(true);
-  const steps = p.steps || [];
-  return h(RN.View, { style: { marginTop: 4, marginBottom: 16, borderRadius: 20, backgroundColor: C.card, borderWidth: 1, borderColor: C.card2, overflow: "hidden" } },
-    h(RN.Pressable, { onPress: () => setOpen(!open), accessibilityRole: "button", accessibilityState: { expanded: open }, style: ({ pressed }) => ({ flexDirection: "row", alignItems: "center", padding: 16, backgroundColor: pressed ? C.press : "transparent" }) },
-      KitTile({ k: "guide", size: 34 }),
-      h(RN.View, { style: { flex: 1 } },
-        h(RN.Text, { style: { color: C.text, fontSize: 17, fontWeight: "800" } }, p.title || "Quick guide"),
-        h(RN.Text, { style: { color: C.sub, fontSize: 13, marginTop: 2 } }, steps.length + " short steps")),
-      h(RN.View, { style: { width: 24, alignItems: "center", justifyContent: "center" } }, KitChevron({ dir: open ? "up" : "down", color: C.sub, size: 9 }))),
-    open ? h(RN.View, { style: { paddingHorizontal: 16, paddingBottom: 6 } }, ...steps.map((s, i) =>
-      h(RN.View, { key: "guide-" + i, style: { flexDirection: "row", paddingTop: 12, paddingBottom: 14, borderTopWidth: 1, borderTopColor: C.card2 } },
-        h(RN.View, { style: { width: 26, height: 26, borderRadius: 13, backgroundColor: hexA(C.blurple, 0.2), alignItems: "center", justifyContent: "center", marginRight: 13, marginTop: 1 } },
-          h(RN.Text, { style: { color: C.blurple, fontSize: 13, fontWeight: "800" } }, String(i + 1))),
-        h(RN.View, { style: { flex: 1 } },
-          h(RN.Text, { style: { color: C.text, fontSize: 15, fontWeight: "700", marginBottom: 3 } }, s[0]),
-          h(RN.Text, { style: { color: C.sub, fontSize: 14, lineHeight: 20 } }, s[1]))))) : null);
-}
-/* ---- end shared kit ---- */
 function copyText(text) {
     try {
         clipboard.setString(text);
@@ -455,11 +335,10 @@ function copyText(text) {
 /* ------------------------------------------------------------------ */
 function fetchT(url, opts) {
     let timer;
-    const controller = typeof AbortController === "function" ? new AbortController() : null;
     const clear = () => clearTimeout(timer);
     return Promise.race([
-        fetch(url, controller ? Object.assign({}, opts, { signal: controller.signal }) : opts),
-        new Promise((_, reject) => { timer = setTimeout(() => { try { if (controller) controller.abort(); } catch (_) { /* ignore */ } reject(new Error("Timed out")); }, TIMEOUT); }),
+        fetch(url, opts),
+        new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("Timed out")), TIMEOUT); }),
     ]).then(res => { clear(); return res; }, err => { clear(); throw err; });
 }
 function callApi(provider, text, tl, sl) {
@@ -468,8 +347,8 @@ function callApi(provider, text, tl, sl) {
         if (!key)
             return Promise.reject(new Error("Add your DeepL API key in Quick Translate settings"));
         const endpoint = key.endsWith(":fx") ? "https://api-free.deepl.com/v2/translate" : "https://api.deepl.com/v2/translate";
-        const deeplCode = (code) => code === "zh-CN" || code === "zh-TW" ? "ZH" : code === "no" ? "NB" : code.toUpperCase();
-        const target = tl === "en" ? "EN-US" : tl === "pt" ? "PT-BR" : tl === "zh-CN" ? "ZH-HANS" : tl === "zh-TW" ? "ZH-HANT" : deeplCode(tl);
+        const deeplCode = (code) => code === "zh-CN" || code === "zh-TW" ? "ZH" : code.toUpperCase();
+        const target = tl === "en" ? "EN-US" : tl === "pt" ? "PT-BR" : deeplCode(tl);
         const source = sl && sl !== "auto" ? deeplCode(sl) : undefined;
         const body = { text: [text], target_lang: target };
         if (source)
@@ -525,29 +404,17 @@ function prettyToken(t) {
         return "";
     return t;
 }
-function isWordChar(ch) {
-    return !!ch && (/[0-9_]/.test(ch) || ch.toLowerCase() !== ch.toUpperCase());
-}
 function protect(text) {
     const tokens = [];
-    const hold = (m) => { tokens.push(m); return "§" + (tokens.length - 1) + "§"; };
-    // Text that already looks like one of our placeholders is kept verbatim.
-    let out = text.replace(/§\s*\d+\s*§/g, hold).replace(PROTECT, hold);
+    let out = text.replace(PROTECT, m => { tokens.push(m); return "§" + (tokens.length - 1) + "§"; });
     const words = Array.isArray(qt.protectedWords) ? qt.protectedWords : [];
     for (const raw of words) {
         const word = String(raw || "").trim();
         if (!word)
             continue;
         const escaped = word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-        const first = word[0], last = word[word.length - 1];
-        out = out.replace(new RegExp(escaped, "gi"), (m, offset, whole) => {
-            // Word boundaries only where the word edge is a letter/digit; works for Cyrillic, symbols and CJK.
-            if (isWordChar(first) && isWordChar(whole[offset - 1]))
-                return m;
-            if (isWordChar(last) && isWordChar(whole[offset + m.length]))
-                return m;
-            return hold(m);
-        });
+        const pattern = new RegExp("\\b" + escaped + "\\b", "gi");
+        out = out.replace(pattern, m => { tokens.push(m); return "§" + (tokens.length - 1) + "§"; });
     }
     return { out, tokens };
 }
@@ -756,6 +623,7 @@ function translateCurrentText(tl, sl) {
         if (writeInput(result.text)) {
             lastOriginal = text;
             lastOriginalChannelId = currentChannelId();
+            lastTranslatedText = result.text;
             return true;
         }
         else
@@ -771,6 +639,7 @@ function restoreOriginal() {
     if (writeInput(lastOriginal)) {
         lastOriginal = null;
         lastOriginalChannelId = null;
+        lastTranslatedText = null;
     }
     else
         toast("Could not write to the chat box");
@@ -811,6 +680,7 @@ function patchSend() {
                 if (lastOriginal != null && msg && (String(args[0]) === String(lastOriginalChannelId || "") || currentChannelId() === lastOriginalChannelId)) {
                     lastOriginal = null;
                     lastOriginalChannelId = null;
+                    lastTranslatedText = null;
                 }
                 bridge.text = "";
                 if (oneShotJob && oneShotTranslated) {
@@ -1333,7 +1203,7 @@ function TranslateButton(props) {
     const translateSendMode = props.position === "send" && !!armed && settings.draftBeforeSend !== false;
     const highlightedTranslate = translateSendMode && settings.highlightDraftButton !== false;
     const icon = iconId
-        ? h(RN.Image, { source: iconId, style: { width: translateSendMode ? 20 : 22, height: translateSendMode ? 20 : 22, tintColor: highlightedTranslate ? "#FFFFFF" : armed ? ACCENT : C.sub } })
+        ? h(RN.Image, { source: iconId, style: { width: 23, height: 23, tintColor: highlightedTranslate ? "#FFFFFF" : armed ? ACCENT : C.sub } })
         : h(RN.Text, { style: { fontSize: 20, textAlign: "center", color: highlightedTranslate ? "#FFFFFF" : armed ? ACCENT : C.sub } }, "\uD83C\uDF10");
     const onPress = () => {
         if (didLongPress.current) {
@@ -1517,11 +1387,7 @@ function TranslateButton(props) {
                 } })))),
             panelPage === "target" ? h(CustomAction, { key: "confirm-target", title: "Confirm " + langName(target), onPress: confirmTargetLanguage }) : null,
         ];
-    const look = sendButtonLook || {};
-    const dim = translateSendMode
-        ? { w: Number(look.width) || 36, h: Number(look.height) || 36, r: look.borderRadius != null ? look.borderRadius : 10, bg: look.backgroundColor || paletteNow.blurple, mr: 0, mv: 0 }
-        : { w: 36, h: 36, r: 10, bg: paletteNow.blurple, mr: 2, mv: -6 };
-    return h(RN.View, { pointerEvents: "box-none", collapsable: false, style: { width: dim.w, height: dim.h, marginRight: dim.mr, marginVertical: dim.mv, alignSelf: "center", flexShrink: 0 } }, h(RN.Animated.View, {
+    return h(RN.View, { pointerEvents: "box-none", collapsable: false, style: { width: 40, height: 40, marginRight: 4, alignSelf: "center", flexShrink: 0 } }, h(RN.Animated.View, {
         onStartShouldSetResponder: () => !busy,
         onResponderTerminationRequest: () => false,
         onResponderGrant: startPress,
@@ -1536,32 +1402,11 @@ function TranslateButton(props) {
         accessibilityHint: "Tap to activate or translate the draft; hold for language and draft options",
         accessibilityActions: [{ name: "activate", label: "Translate" }],
         onAccessibilityTap: onPress,
-        style: { width: dim.w, height: dim.h, borderRadius: dim.r, backgroundColor: highlightedTranslate ? dim.bg : "transparent", alignItems: "center", justifyContent: "center", opacity: busy ? 0.5 : 1, transform: [{ scale: buttonScale }] },
+        style: { width: 40, height: 40, borderRadius: 13, backgroundColor: highlightedTranslate ? paletteNow.blurple : "transparent", alignItems: "center", justifyContent: "center", opacity: busy ? 0.5 : 1, transform: [{ scale: buttonScale }] },
     }, icon), panelOpen ? h(RN.Modal, { visible: true, transparent: true, animationType: "none", onRequestClose: closePanel }, h(RN.View, { style: { flex: 1, justifyContent: "flex-end" } }, h(RN.Animated.View, { pointerEvents: "box-none", style: { position: "absolute", top: 0, bottom: 0, left: 0, right: 0, backgroundColor: "rgba(0,0,0,0.52)", opacity: backdropProgress } }, h(RN.Pressable, { style: { flex: 1 }, onPress: closePanel })), h(RN.Animated.View, {
         style: { maxHeight: "88%", backgroundColor: paletteNow.bg, borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingHorizontal: 16, paddingTop: 14, paddingBottom: 28,
             transform: [{ translateY: sheetProgress.interpolate({ inputRange: [0, 1], outputRange: [sheetTravel, 0] }) }] },
     }, h(RN.View, { ...sheetPanResponder.panHandlers, accessibilityLabel: "Drag down to close translate menu", accessibilityHint: "Swipe down to dismiss", style: { height: 44, marginBottom: 10, flexDirection: "row", alignItems: "center", justifyContent: "center" } }, h(RN.View, { style: { width: 72, height: 44, alignItems: "center", justifyContent: "center" } }, h(RN.View, { style: { width: 38, height: 5, borderRadius: 3, backgroundColor: paletteNow.off } })), h(RN.Pressable, { onPress: closePanel, accessibilityRole: "button", accessibilityLabel: "Close translate menu", hitSlop: 10, style: { position: "absolute", top: 0, right: 0, width: 38, height: 38, borderRadius: 19, backgroundColor: paletteNow.chip, alignItems: "center", justifyContent: "center" } }, h(RN.Text, { style: { color: paletteNow.text, fontSize: 24, lineHeight: 28, fontWeight: "500" } }, String.fromCharCode(215)))), panelPage === "main" ? h(RN.ScrollView, { keyboardShouldPersistTaps: "handled", showsVerticalScrollIndicator: false, style: { flexShrink: 1 }, contentContainerStyle: { paddingBottom: 8 } }, ...panelBody) : h(RN.ScrollView, { keyboardShouldPersistTaps: "handled" }, ...panelBody)))) : null, bulkSelectionRequest ? h(BulkMessageSelector, { key: bulkSelectionRequest.nonce, request: bulkSelectionRequest, onClose: () => { bulkSelectionRequest = null; notifyButton(); } }) : null);
-}
-let sendButtonLook = null;
-function readButtonLook(node, depth) {
-    if (!node || typeof node !== "object" || depth > 4)
-        return null;
-    try {
-        const props = node.props;
-        if (props && props.style && typeof props.style !== "function") {
-            const flat = RN.StyleSheet.flatten(props.style);
-            if (flat && flat.backgroundColor && (flat.width || flat.height) && flat.borderRadius != null)
-                return flat;
-        }
-        const kids = props && props.children;
-        for (const kid of Array.isArray(kids) ? kids : kids ? [kids] : []) {
-            const found = readButtonLook(kid, depth + 1);
-            if (found)
-                return found;
-        }
-    }
-    catch (_) { /* ignore */ }
-    return null;
 }
 function patchChatButton() {
     const h = React.createElement;
@@ -1583,16 +1428,16 @@ function patchChatButton() {
                 return ret;
             return h(RN.View, { pointerEvents: "box-none", collapsable: false, style: { flexDirection: "row", alignItems: "center", overflow: "visible" } }, ret, h(TranslateButton, { key: "qt-button-actions", position: "actions" }));
         }));
+    if (rightActions?.type)
+        unpatches.push(after("render", rightActions.type, (_, ret) => {
+            if (!React.isValidElement(ret))
+                return ret;
+            return React.cloneElement(ret, { style: [ret.props?.style, { alignItems: "center", alignSelf: "center" }] });
+        }));
     if (sendButton?.type)
         unpatches.push(after("render", sendButton.type, (_, ret) => {
             if (!ret)
                 return ret;
-            try {
-                const look = readButtonLook(ret, 0);
-                if (look)
-                    sendButtonLook = look;
-            }
-            catch (_) { /* ignore */ }
             return h(ComposerSendSlot, { button: h(TranslateButton, { key: "qt-button-send", position: "send" }), children: ret });
         }));
 }
@@ -1622,7 +1467,7 @@ function LangPicker(props) {
     const base = props.field === "sourceOut" ? [["auto", "Auto-detect"], ...LANGS] : LANGS;
     const list = base.filter(([code, name]) => !q || name.toLowerCase().includes(q) || code.toLowerCase().includes(q));
     const choose = (code) => {
-        settings.updateSettings({ [props.field]: code });
+        updateQuickTranslateSettings({ [props.field]: code });
         navigation.goBack();
     };
     return h(RN.ScrollView, { style: { flex: 1 }, keyboardShouldPersistTaps: "handled", contentContainerStyle: { padding: 16, paddingBottom: 40 } }, h(CustomInput, { value: query, placeholder: "Search language", onChangeText: setQuery, autoCorrect: false, style: { marginBottom: 18 } }), h(CustomSection, { title: "Languages" }, ...list.map(([code, label], index) => h(CustomRow, { key: code, title: languageLabel(code, label), subtitle: code, last: index === list.length - 1,
@@ -1642,9 +1487,9 @@ function FavPicker() {
             trailing: h(RN.View, { style: { width: 24, height: 24, borderRadius: 7, borderWidth: 1.5, borderColor: on ? palette().blurple : palette().off, backgroundColor: on ? palette().blurple : "transparent", alignItems: "center", justifyContent: "center" } }, on ? h(RN.Text, { style: { color: "#FFFFFF", fontWeight: "800" } }, "✓") : null),
             onPress: () => {
                 if (on)
-                    settings.updateSettings({ favLangs: favs.filter(x => x !== code) });
+                    updateQuickTranslateSettings({ favLangs: favs.filter(x => x !== code) });
                 else if (favs.length < MAX_FAVS)
-                    settings.updateSettings({ favLangs: favs.concat([code]) });
+                    updateQuickTranslateSettings({ favLangs: favs.concat([code]) });
                 else
                     toast("You can pick up to " + MAX_FAVS);
             } });
@@ -1656,7 +1501,7 @@ function ColorPicker() {
     const navigation = NavigationNative.useNavigation();
     const colors = palette();
     const current = translationColor();
-    const select = (hex) => { settings.updateSettings({ translationColor: hex }); refreshTranslated(); navigation.goBack(); };
+    const select = (hex) => { updateQuickTranslateSettings({ translationColor: hex }); refreshTranslated(); navigation.goBack(); };
     return h(RN.ScrollView,{style:{flex:1},contentContainerStyle:{padding:16,paddingBottom:40}},
       h(RN.Text,{style:{color:colors.text,fontSize:20,fontWeight:"700",marginBottom:6}},"Translation color"),
       h(RN.Text,{style:{color:colors.sub,fontSize:14,marginBottom:8}},"Choose a color preset. Your choice saves automatically."),
@@ -1761,7 +1606,7 @@ function HistoryPage() {
             const translated = restore(result.text, tokens, false);
             const updated = { ...entry, alternativeTranslated: translated, alternativeProvider: provider, alternativeAt: Date.now() };
             historyEntries = historyEntries.map(item => item.id === entry.id ? updated : item);
-            settings.updateSettings({ historyEntries: historyEntries.slice(0, MAX_HISTORY) });
+            updateQuickTranslateSettings({ historyEntries: historyEntries.slice(0, MAX_HISTORY) });
             persistLocalData();
         } catch (error) {
             toast(error?.message || "Could not retranslate with " + (provider === "deepl" ? "DeepL" : "Google"));
@@ -1831,7 +1676,7 @@ function AutoChannelsPage() {
     })).filter(section => section.channels.length);
     const toggleChannel = (id) => {
         const next = selected.includes(id) ? selected.filter(x => x !== id) : selected.concat(id);
-        settings.updateSettings({ autoChannelIds: next });
+        updateQuickTranslateSettings({ autoChannelIds: next });
     };
     const dmIds = safe(() => PrivateChannelSortStore.getPrivateChannelIds?.(), []) || [];
     const dms = dmIds.map(id => safe(() => ChannelStore.getChannel(String(id)), null)).filter((channel) => channel && isDM(channel)).map((channel) => {
@@ -1862,18 +1707,18 @@ function Settings() {
     });
     if (!settings._hasHydrated)
         return h(RN.View, { style: { flex: 1, alignItems: "center", justifyContent: "center", padding: 24 } }, h(RN.Text, { style: { color: C.sub, fontSize: 15 } }, "Loading saved Quick Translate settings…"));
-    return h(RN.ScrollView, { style: { flex: 1 }, contentContainerStyle: { padding: 16, paddingBottom: 42 } }, h(KitHero, { icon: "lang", title: "Quick Translate", subtitle: "Translation preferences for your chats", stats: [["Saved", Array.isArray(settings.historyEntries) ? settings.historyEntries.length : 0], ["Service", settings.provider === "deepl" ? "DeepL" : "Google"], ["Output", langName(settings.targetOut)]] }), h(CustomSection, { title: "Translation service" }, h(CustomRow, { title: "Google Translate", subtitle: "No key required · selected by default", icon: "🌐", last: settings.provider !== "deepl",
+    return h(RN.ScrollView, { style: { flex: 1 }, contentContainerStyle: { padding: 16, paddingBottom: 42 } }, h(RN.Text, { style: { color: C.text, fontSize: 25, fontWeight: "800", marginBottom: 5 } }, "Quick Translate"), h(RN.Text, { style: { color: C.sub, fontSize: 14, marginBottom: 23 } }, "Translation preferences for your chats"), h(CustomSection, { title: "Translation service" }, h(CustomRow, { title: "Google Translate", subtitle: "No key required · selected by default", icon: "🌐", last: settings.provider !== "deepl",
         trailing: settings.provider !== "deepl" ? h(RN.Text, { style: { color: C.blurple, fontWeight: "800", fontSize: 18 } }, "✓") : null,
-        onPress: () => settings.updateSettings({ provider: "google" }) }), h(CustomRow, { title: "DeepL", subtitle: "Uses your personal API key · Google fallback", icon: "✦", last: settings.provider === "deepl",
+        onPress: () => updateQuickTranslateSettings({ provider: "google" }) }), h(CustomRow, { title: "DeepL", subtitle: "Uses your personal API key · Google fallback", icon: "✦", last: settings.provider === "deepl",
         trailing: settings.provider === "deepl" ? h(RN.Text, { style: { color: C.blurple, fontWeight: "800", fontSize: 18 } }, "✓") : null,
-        onPress: () => settings.updateSettings({ provider: "deepl" }) }), settings.provider === "deepl" ? h(RN.View, { style: { padding: 14, borderTopWidth: 1, borderTopColor: C.card2 } }, h(RN.Text, { style: { color: C.text, fontSize: 14, fontWeight: "600", marginBottom: 8 } }, "DeepL API key"), h(CustomInput, { value: settings.deeplApiKey || "", placeholder: "Paste your API key", autoCapitalize: "none", autoCorrect: false, secureTextEntry: true, onChangeText: (deeplApiKey) => settings.updateSettings({ deeplApiKey }) }), h(RN.Text, { style: { color: C.sub, fontSize: 12, marginTop: 7, lineHeight: 17 } }, "Your key is stored in this plugin’s local settings. Free API keys ending in :fx are supported.")) : null), h(CustomSection, { title: "Translation rules" }, h(RN.View, { style: { padding: 14 } }, h(RN.Text, { style: { color: C.text, fontSize: 15, fontWeight: "600", marginBottom: 5 } }, "Keep words unchanged"), h(RN.Text, { style: { color: C.sub, fontSize: 12, lineHeight: 16, marginBottom: 9 } }, "Separate words with commas or new lines. Matching whole words keep their original form."), h(CustomInput, { value: (settings.protectedWords || []).join(", "), placeholder: "e.g. names, terms", multiline: true, textAlignVertical: "top", onChangeText: (value) => {
+        onPress: () => updateQuickTranslateSettings({ provider: "deepl" }) }), settings.provider === "deepl" ? h(RN.View, { style: { padding: 14, borderTopWidth: 1, borderTopColor: C.card2 } }, h(RN.Text, { style: { color: C.text, fontSize: 14, fontWeight: "600", marginBottom: 8 } }, "DeepL API key"), h(CustomInput, { value: settings.deeplApiKey || "", placeholder: "Paste your API key", autoCapitalize: "none", autoCorrect: false, secureTextEntry: true, onChangeText: (deeplApiKey) => updateQuickTranslateSettings({ deeplApiKey }) }), h(RN.Text, { style: { color: C.sub, fontSize: 12, marginTop: 7, lineHeight: 17 } }, "Your key is stored in this plugin’s local settings. Free API keys ending in :fx are supported.")) : null), h(CustomSection, { title: "Translation rules" }, h(RN.View, { style: { padding: 14 } }, h(RN.Text, { style: { color: C.text, fontSize: 15, fontWeight: "600", marginBottom: 5 } }, "Keep words unchanged"), h(RN.Text, { style: { color: C.sub, fontSize: 12, lineHeight: 16, marginBottom: 9 } }, "Separate words with commas or new lines. Matching whole words keep their original form."), h(CustomInput, { value: (settings.protectedWords || []).join(", "), placeholder: "e.g. names, terms", multiline: true, textAlignVertical: "top", onChangeText: (value) => {
             const protectedWords = Array.from(new Set(String(value || "").split(/[,\n]+/).map((word) => word.trim()).filter(Boolean))).slice(0, 100);
-            settings.updateSettings({ protectedWords });
-        }, style: { minHeight: 88, paddingVertical: 11 } }))), h(CustomSection, { title: "Languages" }, h(CustomRow, { title: "Translate my messages to", subtitle: languageLabel(settings.targetOut), icon: "↗", trailing: h(RN.Text, { style: { color: C.sub, fontSize: 21 } }, "›"), onPress: () => go("Translate my messages to", TargetOutPage) }), h(CustomRow, { title: "My messages are written in", subtitle: languageLabel(settings.sourceOut), icon: "↙", trailing: h(RN.Text, { style: { color: C.sub, fontSize: 21 } }, "›"), onPress: () => go("My messages are written in", SourceOutPage) }), h(CustomRow, { title: "Translate messages to", subtitle: languageLabel(settings.targetIn), icon: "文", trailing: h(RN.Text, { style: { color: C.sub, fontSize: 21 } }, "›"), onPress: () => go("Translate messages to", TargetInPage) }), h(CustomRow, { title: "Quick languages", subtitle: (settings.favLangs || []).length + " of " + MAX_FAVS + " selected", icon: "★", last: true, trailing: h(RN.Text, { style: { color: C.sub, fontSize: 21 } }, "›"), onPress: () => go("Quick languages", FavPicker) })), h(CustomSection, { title: "Appearance" }, toggle("Immersive translation", "Show the translation below the original message. Turn off to replace its text.", !!settings.immersive, (v) => { settings.updateSettings({ immersive: v }); refreshTranslated(); }), toggle("Show detected source language", "Show a compact source → target code below the translation.", !!settings.showSourceLanguage, (v) => { settings.updateSettings({ showSourceLanguage: v }); refreshTranslated(); if (v)
-        toast("Translate a message to see its source and target codes"); }), h(CustomRow, { title: "Translation color", subtitle: translationColor(), trailing: h(RN.View, { style: { flexDirection: "row", alignItems: "center" } }, h(RN.View, { style: { width: 15, height: 15, borderRadius: 5, backgroundColor: translationColor(), marginRight: 9 } }), h(RN.Text, { style: { color: C.sub, fontSize: 21 } }, "›")), last: true, onPress: () => go("Translation color", ColorPicker) })), h(CustomSection, { title: "Incoming messages" }, toggle("Immersive auto-translate", "Show auto-translations below original.", !!settings.autoIncomingImmersive, (v) => { settings.updateSettings({ autoIncomingImmersive: v }); refreshTranslated(); }), h(CustomRow, { title: "Automatic channels and DMs", subtitle: (settings.autoChannelIds || []).length + " selected", icon: "☷", trailing: h(RN.Text, { style: { color: C.sub, fontSize: 21 } }, "›"), last: true, onPress: () => go("Automatic channels and DMs", AutoChannelsPage) })), h(CustomSection, { title: "Translation history & cache" }, toggle("Keep translations after restart", "Restore saved translations when Discord restarts.", settings.keepMessageTranslations !== false, (v) => { settings.updateSettings({ keepMessageTranslations: v, messageTranslations: v ? (settings.messageTranslations || []) : [] }); }), h(CustomRow, { title: "Translation history", subtitle: (settings.historyEntries || []).length + " saved locally", icon: "◷", trailing: h(RN.Text, { style: { color: C.sub, fontSize: 21 } }, "›"), onPress: () => go("Translation history", HistoryPage) }), h(RN.View, { style: { paddingHorizontal: 13, paddingBottom: 11 } }, h(RN.Text, { style: { color: C.sub, fontSize: 12, marginTop: 10 } }, "Removes saved history, message translations and cached results."), h(CustomAction, { title: "Clear translation history & cache", secondary: true, onPress: () => {
+            updateQuickTranslateSettings({ protectedWords });
+        }, style: { minHeight: 88, paddingVertical: 11 } }))), h(CustomSection, { title: "Languages" }, h(CustomRow, { title: "Translate my messages to", subtitle: languageLabel(settings.targetOut), icon: "↗", trailing: h(RN.Text, { style: { color: C.sub, fontSize: 21 } }, "›"), onPress: () => go("Translate my messages to", TargetOutPage) }), h(CustomRow, { title: "My messages are written in", subtitle: languageLabel(settings.sourceOut), icon: "↙", trailing: h(RN.Text, { style: { color: C.sub, fontSize: 21 } }, "›"), onPress: () => go("My messages are written in", SourceOutPage) }), h(CustomRow, { title: "Translate messages to", subtitle: languageLabel(settings.targetIn), icon: "文", trailing: h(RN.Text, { style: { color: C.sub, fontSize: 21 } }, "›"), onPress: () => go("Translate messages to", TargetInPage) }), h(CustomRow, { title: "Quick languages", subtitle: (settings.favLangs || []).length + " of " + MAX_FAVS + " selected", icon: "★", last: true, trailing: h(RN.Text, { style: { color: C.sub, fontSize: 21 } }, "›"), onPress: () => go("Quick languages", FavPicker) })), h(CustomSection, { title: "Appearance" }, toggle("Immersive translation", "Show the translation below the original message. Turn off to replace its text.", !!settings.immersive, (v) => { updateQuickTranslateSettings({ immersive: v }); refreshTranslated(); }), toggle("Show detected source language", "Show a compact source → target code below the translation.", !!settings.showSourceLanguage, (v) => { updateQuickTranslateSettings({ showSourceLanguage: v }); refreshTranslated(); if (v)
+        toast("Translate a message to see its source and target codes"); }), h(CustomRow, { title: "Translation color", subtitle: translationColor(), trailing: h(RN.View, { style: { flexDirection: "row", alignItems: "center" } }, h(RN.View, { style: { width: 15, height: 15, borderRadius: 5, backgroundColor: translationColor(), marginRight: 9 } }), h(RN.Text, { style: { color: C.sub, fontSize: 21 } }, "›")), last: true, onPress: () => go("Translation color", ColorPicker) })), h(CustomSection, { title: "Incoming messages" }, toggle("Immersive auto-translate", "Show auto-translations below original.", !!settings.autoIncomingImmersive, (v) => { updateQuickTranslateSettings({ autoIncomingImmersive: v }); refreshTranslated(); }), h(CustomRow, { title: "Automatic channels and DMs", subtitle: (settings.autoChannelIds || []).length + " selected", icon: "☷", trailing: h(RN.Text, { style: { color: C.sub, fontSize: 21 } }, "›"), last: true, onPress: () => go("Automatic channels and DMs", AutoChannelsPage) })), h(CustomSection, { title: "Translation history & cache" }, toggle("Keep translations after restart", "Restore saved translations when Discord restarts.", settings.keepMessageTranslations !== false, (v) => { updateQuickTranslateSettings({ keepMessageTranslations: v, messageTranslations: v ? (settings.messageTranslations || []) : [] }); }), h(CustomRow, { title: "Translation history", subtitle: (settings.historyEntries || []).length + " saved locally", icon: "◷", trailing: h(RN.Text, { style: { color: C.sub, fontSize: 21 } }, "›"), onPress: () => go("Translation history", HistoryPage) }), h(RN.View, { style: { paddingHorizontal: 13, paddingBottom: 11 } }, h(RN.Text, { style: { color: C.sub, fontSize: 12, marginTop: 10 } }, "Removes saved history, message translations and cached results."), h(CustomAction, { title: "Clear translation history & cache", secondary: true, onPress: () => {
             clearTranslationData();
         } }))), h(CustomSection, { title: "Chat composer" }, toggle("Show translate button", "Show the translate control in the chat composer.", settings.showButton !== false, (v) => { if (!v)
-        armed = null; settings.updateSettings({ showButton: v }); notifyButton(); }), toggle("Translate before sending", "Send becomes Translate; tap again to send.", settings.draftBeforeSend !== false, (v) => { settings.updateSettings({ draftBeforeSend: v }); notifyButton(); }), toggle("Highlight Translate Draft button", "Use a blue background to distinguish Translate from Send.", settings.highlightDraftButton !== false, (v) => settings.updateSettings({ highlightDraftButton: v })), toggle("Remember language per chat", "Store each chat’s default language separately.", settings.rememberLanguagesPerChat !== false, (v) => settings.updateSettings({ rememberLanguagesPerChat: v })), toggle("Keep translate active", "In normal mode, keep translating sent messages until you turn it off.", !!settings.keepArmed, (v) => { settings.updateSettings({ keepArmed: v }); notifyButton(); }), h(CustomRow, { title: "Button position", subtitle: settings.anchor === "send" ? "Next to the Send button" : "Next to the + button", trailing: h(RN.Text, { style: { color: C.sub, fontSize: 21 } }, "›"), onPress: () => {
+        armed = null; updateQuickTranslateSettings({ showButton: v }); notifyButton(); }), toggle("Translate before sending", "Send becomes Translate; tap again to send.", settings.draftBeforeSend !== false, (v) => { updateQuickTranslateSettings({ draftBeforeSend: v }); notifyButton(); }), toggle("Highlight Translate Draft button", "Use a blue background to distinguish Translate from Send.", settings.highlightDraftButton !== false, (v) => updateQuickTranslateSettings({ highlightDraftButton: v })), toggle("Remember language per chat", "Store each chat’s default language separately.", settings.rememberLanguagesPerChat !== false, (v) => updateQuickTranslateSettings({ rememberLanguagesPerChat: v })), toggle("Keep translate active", "In normal mode, keep translating sent messages until you turn it off.", !!settings.keepArmed, (v) => { updateQuickTranslateSettings({ keepArmed: v }); notifyButton(); }), h(CustomRow, { title: "Button position", subtitle: settings.anchor === "send" ? "Next to the Send button" : "Next to the + button", trailing: h(RN.Text, { style: { color: C.sub, fontSize: 21 } }, "›"), onPress: () => {
             const sheets = safe(() => findByProps("showSimpleActionSheet"), null);
             if (!sheets?.showSimpleActionSheet) {
                 toast("Could not open position options");
@@ -1889,7 +1734,7 @@ function Settings() {
                     { label: "Next to the + button", isMarked: settings.anchor !== "send", onPress: () => savePosition("actions") },
                     { label: "Next to the Send button", isMarked: settings.anchor === "send", onPress: () => savePosition("send") },
                 ] });
-        } }), toggle("Save translation history", "Store translated messages and drafts locally in Translation history.", settings.saveHistory !== false, (v) => settings.updateSettings({ saveHistory: v })), toggle("Hide Gift button", "Hide the Gift button in the chat composer.", !!settings.hideGiftButton, (v) => { settings.updateSettings({ hideGiftButton: v }); toast("Restart Discord to apply this setting"); })), h(KitGuide, { title: "Quick guide", steps: [["Translate a message","Long-press a message to translate it, view the original, or open more translation actions."],["Translate a draft","Use the Translate button in the composer to translate what you are typing before it is sent. With Translate before sending on, Send turns into Translate and a second tap sends."],["Pick a service and languages","Choose Google Translate (no key needed) or DeepL (your own API key), then set separate languages for your outgoing and incoming messages."],["Automatic translation","Select the channels and DMs where new incoming messages should be translated automatically. Immersive mode shows the translation below the original."],["History and comparing","Translation history keeps your saved translations. Use Try DeepL or Try Google to compare the other service without changing your default, copy a translation, or jump to its message."],["Protect words","Add protected words, such as names or terms, that should never be translated."]] }), h(RN.Text, { style: { color: C.sub, fontSize: 12, textAlign: "center", marginTop: 1, opacity: 0.7 } }, "Quick Translate " + BUILD));
+        } }), toggle("Save translation history", "Store translated messages and drafts locally in Translation history.", settings.saveHistory !== false, (v) => updateQuickTranslateSettings({ saveHistory: v })), toggle("Hide Gift button", "Hide the Gift button in the chat composer.", !!settings.hideGiftButton, (v) => { updateQuickTranslateSettings({ hideGiftButton: v }); toast("Restart Discord to apply this setting"); })), h(RN.View, { style: { marginTop: 18, marginBottom: 12, padding: 16, borderRadius: 15, backgroundColor: C.card, borderWidth: 1, borderColor: C.card2 } }, h(RN.Text, { style: { color: C.text, fontSize: 20, fontWeight: "800", marginBottom: 8 } }, "Quick guide"), h(RN.Text, { key: "guide-0", style: { color: C.sub, fontSize: 15, lineHeight: 21, marginTop: 0 } }, "Long-press a message to translate it, view the original, or open translation actions."), h(RN.Text, { key: "guide-1", style: { color: C.sub, fontSize: 15, lineHeight: 21, marginTop: 5 } }, "Use the composer Translate button to translate a draft before sending it."), h(RN.Text, { key: "guide-2", style: { color: C.sub, fontSize: 15, lineHeight: 21, marginTop: 5 } }, "Choose Google Translate or DeepL, then set separate languages for incoming and outgoing messages."), h(RN.Text, { key: "guide-3", style: { color: C.sub, fontSize: 15, lineHeight: 21, marginTop: 5 } }, "Automatic translation can be limited to selected channels and DMs; saved translations return after restart.")), h(RN.Text, { style: { color: C.sub, fontSize: 12, textAlign: "center", marginTop: 1 } }, "Quick Translate " + BUILD));
 }
 /* ------------------------------------------------------------------ */
 /* plugin                                                              */
@@ -1999,14 +1844,6 @@ function migrateSettings() {
         });
         stored = useQuickTranslate.getState();
     }
-    if (stored.settingsVersion < 13) {
-        stored.updateSettings({
-            immersive: true, autoIncomingImmersive: true, showButton: true, draftBeforeSend: true, highlightDraftButton: true,
-            rememberLanguagesPerChat: true, keepArmed: true, saveHistory: true, hideGiftButton: true,
-            settingsVersion: 13,
-        });
-        stored = useQuickTranslate.getState();
-    }
     if (stored.anchor !== "actions" && stored.anchor !== "send")
         stored.updateSettings({ anchor: "actions" });
 }
@@ -2040,6 +1877,7 @@ function onChannelSelect(e) {
     if (lastOriginalChannelId && lastOriginalChannelId !== id) {
         lastOriginal = null;
         lastOriginalChannelId = null;
+        lastTranslatedText = null;
     }
     if (bulkSelectionRequest && id !== bulkSelectionRequest.channelId) {
         bulkSelectionRequest = null;
@@ -2102,6 +1940,7 @@ exports.default = {
         armed = null;
         lastOriginal = null;
         lastOriginalChannelId = null;
+        lastTranslatedText = null;
     },
     settings: Settings,
 };
