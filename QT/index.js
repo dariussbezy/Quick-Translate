@@ -11,7 +11,7 @@ const { ChannelStore, MessageStore, PrivateChannelSortStore, SelectedChannelStor
 /* ------------------------------------------------------------------ */
 /* constants + settings store                                          */
 /* ------------------------------------------------------------------ */
-const BUILD = "v1.0.4";
+const BUILD = "v1.0.5";
 const QT_TEXT_BRIDGE_KEY = "__rainQuickTranslateTextBridge";
 const FLAG_TOGGLE = 0x04000000;
 const ACCENT = "#8EA1FF";
@@ -920,6 +920,26 @@ function messageArray(channelId) {
     const value = safe(() => result.toArray(), null) || result._array || result.messages || result;
     return Array.isArray(value) ? value : [];
 }
+const BULK_PAGE_SIZE = 25;
+function bulkMessageCandidates(request) {
+    const seed = request?.seedMessage;
+    const all = [...messageArray(request?.channelId), seed].filter((message) =>
+        message?.id && typeof message.content === "string" && message.content.trim() &&
+        (message.type == null || message.type === 0));
+    const unique = new Map();
+    for (const message of all)
+        unique.set(String(message.id), message);
+    return Array.from(unique.values()).sort((a, b) => String(b.id).localeCompare(String(a.id)));
+}
+function fetchBulkMessagePage(channelId, before) {
+    const actions = safe(() => findByProps("fetchMessages"), null);
+    if (typeof actions?.fetchMessages !== "function")
+        return Promise.resolve(null);
+    const options = { channelId: String(channelId), limit: BULK_PAGE_SIZE };
+    if (before)
+        options.before = String(before);
+    return Promise.resolve().then(() => actions.fetchMessages(options)).then((result) => ({ ok: true, result }), () => null);
+}
 function openBulkSelection(message) {
     const channelId = String(message?.channel_id || message?.channelId || currentChannelId() || "");
     if (!channelId) {
@@ -935,17 +955,77 @@ function BulkMessageSelector(props) {
     const [selected, setSelected] = React.useState([]);
     const [busy, setBusy] = React.useState(false);
     const [query, setQuery] = React.useState("");
-    React.useEffect(() => {
-        setSelected(props.request.seedMessage?.id ? [String(props.request.seedMessage.id)] : []);
-        setQuery("");
-        setBusy(false);
-    }, [props.request.nonce]);
     const seed = props.request.seedMessage;
     const seedId = String(seed?.id || "");
-    const recent = messageArray(props.request.channelId)
-        .filter((m) => m?.id && typeof m.content === "string" && m.content.trim() && (m.type == null || m.type === 0))
-        .slice(-70).reverse();
-    const messages = [seed, ...recent.filter((m) => String(m.id) !== seedId)].filter((m) => m?.id);
+    const visiblePageSize = seedId ? BULK_PAGE_SIZE - 1 : BULK_PAGE_SIZE;
+    const initialMessages = bulkMessageCandidates(props.request);
+    const initialPage = initialMessages.filter((m) => String(m.id) !== seedId).slice(0, visiblePageSize);
+    const [messages, setMessages] = React.useState(seed ? [seed, ...initialPage] : initialPage);
+    const [loadingMore, setLoadingMore] = React.useState(false);
+    const [hasMore, setHasMore] = React.useState(true);
+    const loadLock = React.useRef(false);
+    const cursor = React.useRef(initialPage[initialPage.length - 1]?.id || null);
+    React.useEffect(() => {
+        let active = true;
+        setSelected(seedId ? [seedId] : []);
+        setQuery("");
+        setBusy(false);
+        setLoadingMore(false);
+        loadLock.current = false;
+        const loaded = bulkMessageCandidates(props.request);
+        const firstPage = loaded.filter((m) => String(m.id) !== seedId).slice(0, visiblePageSize);
+        setMessages(seed ? [seed, ...firstPage] : firstPage);
+        cursor.current = firstPage[firstPage.length - 1]?.id || null;
+        setHasMore(true);
+        if (firstPage.length >= visiblePageSize)
+            return () => { active = false; };
+        fetchBulkMessagePage(props.request.channelId, null).then((result) => {
+            if (!active)
+                return;
+            const refreshed = bulkMessageCandidates(props.request);
+            const page = refreshed.filter((m) => String(m.id) !== seedId).slice(0, visiblePageSize);
+            setMessages(seed ? [seed, ...page] : page);
+            cursor.current = page[page.length - 1]?.id || null;
+            setHasMore(!!result && page.length >= visiblePageSize);
+            if (!result)
+                toast("Could not load the latest 25 messages; showing messages already loaded");
+        });
+        return () => { active = false; };
+    }, [props.request.nonce]);
+    const loadMore = async () => {
+        if (loadLock.current || !hasMore)
+            return;
+        loadLock.current = true;
+        setLoadingMore(true);
+        const currentCursor = cursor.current;
+        const currentIds = new Set(messages.map((m) => String(m.id)));
+        const fetchResult = await fetchBulkMessagePage(props.request.channelId, currentCursor);
+        const all = bulkMessageCandidates(props.request);
+        const older = all.filter((m) => currentCursor && String(m.id) < String(currentCursor) && !currentIds.has(String(m.id)))
+            .slice(0, BULK_PAGE_SIZE);
+        if (older.length) {
+            setMessages((current) => {
+                const ids = new Set(current.map((m) => String(m.id)));
+                return current.concat(older.filter((m) => !ids.has(String(m.id))));
+            });
+            cursor.current = older[older.length - 1].id;
+            setHasMore(older.length >= BULK_PAGE_SIZE || !!fetchResult);
+        } else {
+            setHasMore(false);
+            if (!fetchResult)
+                toast("Could not load older messages");
+        }
+        setLoadingMore(false);
+        loadLock.current = false;
+    };
+    const onListScroll = (event) => {
+        const native = event?.nativeEvent || {};
+        const layout = native.layoutMeasurement || {};
+        const offset = native.contentOffset || {};
+        const size = native.contentSize || {};
+        if (Number(offset.y || 0) + Number(layout.height || 0) >= Number(size.height || 0) - 96)
+            loadMore();
+    };
     const q = query.trim().toLowerCase();
     const visible = messages.filter((m) => !q || String(m.content).toLowerCase().includes(q));
     const isAll = visible.length > 0 && visible.every((m) => selected.includes(String(m.id)));
@@ -963,15 +1043,33 @@ function BulkMessageSelector(props) {
         setBusy(true);
         props.onTranslate(chosen);
     };
-    return h(RN.Modal, { visible: true, transparent: false, animationType: "none", onRequestClose: props.onClose, statusBarTranslucent: true }, h(RN.View, { style: { flex: 1, backgroundColor: C.bg, paddingTop: 48, paddingHorizontal: 16, paddingBottom: 18 } }, h(RN.View, { style: { flexDirection: "row", alignItems: "center", marginBottom: 14 } }, h(RN.Pressable, { onPress: props.onClose, hitSlop: 10, style: { padding: 8, marginLeft: -8, marginRight: 8 } }, h(RN.Text, { style: { color: C.text, fontSize: 27 } }, "‹")), h(RN.View, { style: { flex: 1 } }, h(RN.Text, { style: { color: C.text, fontSize: 22, fontWeight: "800" } }, "Bulk translate"), h(RN.Text, { style: { color: C.sub, fontSize: 13, marginTop: 2 } }, selected.length + " selected · newest message first"))), h(CustomInput, { value: query, placeholder: "Search messages", onChangeText: setQuery, autoCorrect: false, style: { marginBottom: 10 } }), h(RN.View, { style: { flexDirection: "row", marginBottom: 10 } }, h(RN.View, { style: { flex: 1, marginRight: 6 } }, h(CustomAction, { title: isAll ? "Deselect all" : "Select all", secondary: true, onPress: () => setSelected((current) => isAll ? current.filter(id => !visible.some((m) => String(m.id) === id)) : Array.from(new Set(current.concat(visible.map((m) => String(m.id)))))) })), h(RN.View, { style: { flex: 1, marginLeft: 6 } }, h(CustomAction, { title: "Clear selection", secondary: true, onPress: () => setSelected([]) }))), visible.length ? h(RN.ScrollView, { style: { flex: 1 }, keyboardShouldPersistTaps: "handled", contentContainerStyle: { paddingBottom: 12 } }, h(CustomSection, { title: "Messages" }, ...visible.map((message, index) => {
-        const id = String(message.id);
-        const marked = selected.includes(id);
-        const label = String(message.content).replace(/\s+/g, " ").trim();
-        const author = nameOf(message.author);
-        return h(CustomRow, { key: id, title: (id === seedId ? "Selected message · " : "") + author, subtitle: label, last: index === visible.length - 1,
-            trailing: h(RN.View, { style: { width: 23, height: 23, borderRadius: 6, borderWidth: 1.5, borderColor: marked ? C.blurple : C.off, backgroundColor: marked ? C.blurple : "transparent", alignItems: "center", justifyContent: "center" } }, marked ? h(RN.Text, { style: { color: "#FFFFFF", fontSize: 15, fontWeight: "800" } }, "✓") : null),
-            onPress: () => toggle(message) });
-    }))) : h(RN.View, { style: { flex: 1, alignItems: "center", justifyContent: "center" } }, h(RN.Text, { style: { color: C.sub } }, "No loaded messages match this search.")), h(CustomAction, { title: busy ? "Opening translation…" : "Continue to translation · " + selected.length, disabled: busy || !selected.length, onPress: run })));
+    return h(RN.Modal, { visible: true, transparent: false, animationType: "none", onRequestClose: props.onClose, statusBarTranslucent: true },
+        h(RN.View, { style: { flex: 1, backgroundColor: C.bg, paddingTop: 48, paddingHorizontal: 16, paddingBottom: 18 } },
+            h(RN.View, { style: { flexDirection: "row", alignItems: "center", marginBottom: 14 } },
+                h(RN.Pressable, { onPress: props.onClose, hitSlop: 10, style: { padding: 8, marginLeft: -8, marginRight: 8 } }, h(RN.Text, { style: { color: C.text, fontSize: 27 } }, "‹")),
+                h(RN.View, { style: { flex: 1 } },
+                    h(RN.Text, { style: { color: C.text, fontSize: 22, fontWeight: "800" } }, "Bulk translate"),
+                    h(RN.Text, { style: { color: C.sub, fontSize: 13, marginTop: 2 } }, selected.length + " selected · " + messages.length + " loaded · newest first"))),
+            h(CustomInput, { value: query, placeholder: "Search messages", onChangeText: setQuery, autoCorrect: false, style: { marginBottom: 10 } }),
+            h(RN.View, { style: { flexDirection: "row", marginBottom: 10 } },
+                h(RN.View, { style: { flex: 1, marginRight: 6 } }, h(CustomAction, { title: isAll ? "Deselect all" : "Select all", secondary: true, onPress: () => setSelected((current) => isAll ? current.filter(id => !visible.some((m) => String(m.id) === id)) : Array.from(new Set(current.concat(visible.map((m) => String(m.id)))))) })),
+                h(RN.View, { style: { flex: 1, marginLeft: 6 } }, h(CustomAction, { title: "Clear selection", secondary: true, onPress: () => setSelected([]) }))),
+            visible.length ? h(RN.ScrollView, { style: { flex: 1 }, keyboardShouldPersistTaps: "handled", contentContainerStyle: { paddingBottom: 12 }, onScroll: onListScroll, scrollEventThrottle: 180 },
+                h(CustomSection, { title: "Messages" }, ...visible.map((message, index) => {
+                    const id = String(message.id);
+                    const marked = selected.includes(id);
+                    const label = String(message.content).replace(/\s+/g, " ").trim();
+                    const author = nameOf(message.author);
+                    const translated = translations.get(id);
+                    return h(CustomRow, { key: id, title: (id === seedId ? "Selected message · " : "") + author, subtitle: translated?.text ? label + "\n→ " + translated.text : label, last: index === visible.length - 1,
+                        trailing: h(RN.View, { style: { width: 23, height: 23, borderRadius: 6, borderWidth: 1.5, borderColor: marked ? C.blurple : C.off, backgroundColor: marked ? C.blurple : "transparent", alignItems: "center", justifyContent: "center" } }, marked ? h(RN.Text, { style: { color: "#FFFFFF", fontSize: 15, fontWeight: "800" } }, "✓") : null),
+                        onPress: () => toggle(message) });
+                })),
+                loadingMore ? h(RN.View, { style: { padding: 16, alignItems: "center" } }, h(RN.ActivityIndicator, { color: C.blurple }), h(RN.Text, { style: { color: C.sub, fontSize: 12, marginTop: 8 } }, "Loading 25 older messages…"))
+                    : hasMore ? h(RN.Text, { style: { textAlign: "center", color: C.sub, fontSize: 12, padding: 16 } }, "Scroll down to load 25 older messages")
+                    : h(RN.Text, { style: { textAlign: "center", color: C.sub, fontSize: 12, padding: 16 } }, "End of available messages"))
+                : h(RN.View, { style: { flex: 1, alignItems: "center", justifyContent: "center" } }, h(RN.Text, { style: { color: C.sub } }, "No loaded messages match this search.")),
+            h(CustomAction, { title: busy ? "Opening translation…" : "Continue to translation · " + selected.length, disabled: busy || !selected.length, onPress: run })));
 }
 function refreshTranslated() {
     translations.forEach((t, id) => { if (t.ch)
@@ -1555,13 +1653,24 @@ function TranslateButton(props) {
             const selectedMessages = Array.isArray(messageRequest.messages) ? messageRequest.messages : [messageRequest.message].filter(Boolean);
             if (selectedMessages.length > 1) {
                 (async () => {
-                    let done = 0;
+                    let translatedCount = 0;
+                    let alreadyCount = 0;
+                    let failedCount = 0;
                     for (const item of selectedMessages) {
-                        if (await translateMessage(item, target, true, undefined, false, source))
-                            done++;
+                        const id = String(item?.id || "");
+                        const previous = translations.get(id);
+                        const ok = await translateMessage(item, target, true, undefined, false, source);
+                        const current = translations.get(id);
+                        if (!ok)
+                            failedCount++;
+                        else if (current && current !== previous) {
+                            translatedCount++;
+                        }
+                        else
+                            alreadyCount++;
                     }
                     setBusy(false);
-                    toast(done + " of " + selectedMessages.length + " messages translated");
+                    toast(translatedCount + " translated · " + alreadyCount + " already in " + langName(target) + " · " + failedCount + " failed");
                     closePanel();
                 })();
                 return;
@@ -2174,7 +2283,7 @@ exports.default = {
     name: "Quick Translate",
     description: "Translate incoming and outgoing messages with Google Translate or DeepL.",
     id: "quicktranslate",
-    version: "1.0.4",
+    version: "1.0.5",
     start() {
         renderErrors = 0;
         step("textBridge", installTextBridge);
