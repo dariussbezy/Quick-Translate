@@ -11,7 +11,8 @@ const { ChannelStore, MessageStore, PrivateChannelSortStore, SelectedChannelStor
 /* ------------------------------------------------------------------ */
 /* constants + settings store                                          */
 /* ------------------------------------------------------------------ */
-const BUILD = "v1.0.0";
+const BUILD = "v1.0.1";
+const QT_TEXT_BRIDGE_KEY = "__rainQuickTranslateTextBridge";
 const FLAG_TOGGLE = 0x04000000;
 const ACCENT = "#8EA1FF";
 const MAX_TRANSLATIONS = 300;
@@ -89,6 +90,7 @@ let lastOriginal = null;
 let lastOriginalChannelId = null;
 let renderErrors = 0;
 let renderUnpatch = null;
+let pluginStarted = false;
 let ThemeStore;
 let persistentReady = false;
 let historyEntries = [];
@@ -1168,6 +1170,25 @@ function messagePlan(message) {
         plan.push({ key: "qt-copy-translation", label: "Copy translation", press: () => copyText(translated.text) });
     return plan;
 }
+function installTextBridge() {
+    const root = globalThis;
+    const api = {
+        isActive: () => pluginStarted,
+        getMessageActions: (message) => {
+            if (!pluginStarted)
+                return [];
+            const plan = messagePlan(message);
+            return plan ? plan.filter(item => item.key !== "qt-select-messages") : [];
+        },
+    };
+    pluginStarted = true;
+    root[QT_TEXT_BRIDGE_KEY] = api;
+    unpatches.push(() => {
+        pluginStarted = false;
+        if (root[QT_TEXT_BRIDGE_KEY] === api)
+            delete root[QT_TEXT_BRIDGE_KEY];
+    });
+}
 function hideLanguageSheet() {
     try {
         findByProps("openLazy", "hideActionSheet").hideActionSheet();
@@ -1524,15 +1545,15 @@ function TranslateButton(props) {
     const look = sendButtonLook || {};
     const dim = translateSendMode
         ? { w: Number(look.width) || 36, h: Number(look.height) || 36, r: look.borderRadius != null ? look.borderRadius : 10, bg: look.backgroundColor || paletteNow.blurple, mr: 0, mv: 0 }
-        : { w: 36, h: 36, r: 10, bg: paletteNow.blurple, mr: 2, mv: -6 };
-    return h(RN.View, { pointerEvents: "box-none", collapsable: false, style: { width: dim.w, height: dim.h, marginRight: dim.mr, marginVertical: dim.mv, alignSelf: "center", flexShrink: 0 } }, h(RN.Animated.View, {
+        : { w: 32, h: 32, r: 10, bg: paletteNow.blurple, mr: 0, ml: 5, mv: 0 };
+    return h(RN.View, { pointerEvents: "box-none", collapsable: false, style: { width: dim.w, height: dim.h, marginRight: dim.mr, marginLeft: dim.ml || 0, marginVertical: dim.mv, alignSelf: "flex-end", flexShrink: 0 } }, h(RN.Animated.View, {
         onStartShouldSetResponder: () => !busy,
         onResponderTerminationRequest: () => false,
         onResponderGrant: startPress,
         onResponderRelease: finishPress,
         onResponderTerminate: cancelPress,
-        hitSlop: 10,
-        pressRetentionOffset: { top: 18, bottom: 18, left: 18, right: 18 },
+        hitSlop: 2,
+        pressRetentionOffset: { top: 4, bottom: 4, left: 4, right: 4 },
         pointerEvents: "auto",
         collapsable: false,
         accessibilityRole: "button",
@@ -1614,8 +1635,8 @@ function ComposerSendSlot(props) {
     if (!showTranslate)
         return props.children;
     if (replaceSend)
-        return h(RN.View, { pointerEvents: "box-none", collapsable: false, style: { position: "relative", alignItems: "center", justifyContent: "center", alignSelf: "center" } }, h(RN.View, { pointerEvents: "none", accessible: false, accessibilityElementsHidden: true, importantForAccessibility: "no-hide-descendants", style: { opacity: 0 } }, props.children), h(RN.View, { pointerEvents: "box-none", style: { position: "absolute", top: 0, bottom: 0, left: 0, right: 0, alignItems: "center", justifyContent: "center" } }, props.button));
-    return h(RN.View, { pointerEvents: "box-none", style: { flexDirection: "row", alignItems: "center", alignSelf: "center" } }, props.button, props.children);
+        return h(RN.View, { pointerEvents: "box-none", collapsable: false, style: { position: "relative", alignItems: "flex-end", justifyContent: "flex-end", alignSelf: "flex-end" } }, h(RN.View, { pointerEvents: "none", accessible: false, accessibilityElementsHidden: true, importantForAccessibility: "no-hide-descendants", style: { opacity: 0 } }, props.children), h(RN.View, { pointerEvents: "box-none", style: { position: "absolute", bottom: 0, right: 0, alignItems: "flex-end", justifyContent: "flex-end" } }, props.button));
+    return h(RN.View, { pointerEvents: "box-none", style: { flexDirection: "row", alignItems: "flex-end", alignSelf: "flex-end" } }, props.button, props.children);
 }
 function LangPicker(props) {
     const h = React.createElement;
@@ -2058,9 +2079,10 @@ exports.default = {
     name: "Quick Translate",
     description: "Translate incoming and outgoing messages with Google Translate or DeepL.",
     id: "quicktranslate",
-    version: "1.0.0",
+    version: "1.0.1",
     start() {
         renderErrors = 0;
+        step("textBridge", installTextBridge);
         step("settingsHydration", waitForSettingsHydration);
         step("localData", hydrateLocalData);
         step("channel", () => {
@@ -2079,6 +2101,7 @@ exports.default = {
         step("chatButton", patchChatButton);
     },
     stop() {
+        pluginStarted = false;
         for (const u of unpatches.splice(0)) {
             try {
                 u();
