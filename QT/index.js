@@ -11,7 +11,7 @@ const { ChannelStore, MessageStore, PrivateChannelSortStore, SelectedChannelStor
 /* ------------------------------------------------------------------ */
 /* constants + settings store                                          */
 /* ------------------------------------------------------------------ */
-const BUILD = "v1.0.2";
+const BUILD = "v1.0.3";
 const QT_TEXT_BRIDGE_KEY = "__rainQuickTranslateTextBridge";
 const FLAG_TOGGLE = 0x04000000;
 const ACCENT = "#8EA1FF";
@@ -1197,6 +1197,23 @@ function installTextBridge() {
             const plan = messagePlan(message);
             return plan ? plan.filter(item => item.key !== "qt-select-messages") : [];
         },
+        getMessageTranslation: (messageId) => {
+            const result = translations.get(String(messageId));
+            if (!result || !result.text)
+                return null;
+            const sourceCode = String(result.src || "").toLowerCase();
+            const source = sourceCode === "zh-cn" ? "zh-CN" : sourceCode === "zh-tw" ? "zh-TW" : sourceCode.split("-")[0];
+            const target = String(result.tl || "").toLowerCase();
+            const sourceLabel = qt.showSourceLanguage && source && source !== "auto"
+                ? langName(source) + " → " + langName(target)
+                : "";
+            return {
+                text: result.text,
+                color: translationColor(),
+                immersive: result.autoIncoming ? qt.autoIncomingImmersive : (result.immersive ?? qt.immersive),
+                sourceLabel,
+            };
+        },
     };
     pluginStarted = true;
     root[QT_TEXT_BRIDGE_KEY] = api;
@@ -1523,9 +1540,14 @@ function TranslateButton(props) {
     const activateOnce = () => {
         if (messageRequest) {
             setBusy(true);
+            const messageId = String(messageRequest.message.id || "");
+            const previousTranslationAt = translations.get(messageId)?.at;
             translateMessage(messageRequest.message, target, false, undefined, false, source).then((ok) => {
                 setBusy(false);
-                if (ok)
+                const result = translations.get(messageId);
+                const translatedText = String(result?.text || "").trim();
+                const originalText = String(messageRequest.message.content || "").trim();
+                if (ok && result && result.at !== previousTranslationAt && translatedText && translatedText !== originalText)
                     closePanel();
             });
             return;
@@ -2125,7 +2147,7 @@ exports.default = {
     name: "Quick Translate",
     description: "Translate incoming and outgoing messages with Google Translate or DeepL.",
     id: "quicktranslate",
-    version: "1.0.2",
+    version: "1.0.3",
     start() {
         renderErrors = 0;
         step("textBridge", installTextBridge);

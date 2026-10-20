@@ -2,7 +2,7 @@
   "id": "quicktranslate",
   "name": "Quick Translate",
   "description": "Translate incoming and outgoing messages, use auto-translate, and do more with Google Translate or DeepL. Check the plugin settings!",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "authors": [
     "dariussbezy"
   ],
