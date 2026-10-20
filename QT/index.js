@@ -11,7 +11,7 @@ const { ChannelStore, MessageStore, PrivateChannelSortStore, SelectedChannelStor
 /* ------------------------------------------------------------------ */
 /* constants + settings store                                          */
 /* ------------------------------------------------------------------ */
-const BUILD = "v1.0.3";
+const BUILD = "v1.0.4";
 const QT_TEXT_BRIDGE_KEY = "__rainQuickTranslateTextBridge";
 const FLAG_TOGGLE = 0x04000000;
 const ACCENT = "#8EA1FF";
@@ -953,7 +953,7 @@ function BulkMessageSelector(props) {
         const id = String(message.id);
         setSelected((current) => current.includes(id) ? current.filter(x => x !== id) : current.concat(id));
     };
-    const run = async () => {
+    const run = () => {
         const byId = new Map(messages.map((m) => [String(m.id), m]));
         const chosen = selected.map(id => byId.get(id)).filter(Boolean);
         if (!chosen.length) {
@@ -961,13 +961,7 @@ function BulkMessageSelector(props) {
             return;
         }
         setBusy(true);
-        props.onClose();
-        let done = 0;
-        for (const item of chosen)
-            if (await translateMessage(item, qt.targetIn || "en", true))
-                done++;
-        toast(done + " of " + chosen.length + " messages translated");
-        setBusy(false);
+        props.onTranslate(chosen);
     };
     return h(RN.Modal, { visible: true, transparent: false, animationType: "none", onRequestClose: props.onClose, statusBarTranslucent: true }, h(RN.View, { style: { flex: 1, backgroundColor: C.bg, paddingTop: 48, paddingHorizontal: 16, paddingBottom: 18 } }, h(RN.View, { style: { flexDirection: "row", alignItems: "center", marginBottom: 14 } }, h(RN.Pressable, { onPress: props.onClose, hitSlop: 10, style: { padding: 8, marginLeft: -8, marginRight: 8 } }, h(RN.Text, { style: { color: C.text, fontSize: 27 } }, "‹")), h(RN.View, { style: { flex: 1 } }, h(RN.Text, { style: { color: C.text, fontSize: 22, fontWeight: "800" } }, "Bulk translate"), h(RN.Text, { style: { color: C.sub, fontSize: 13, marginTop: 2 } }, selected.length + " selected · newest message first"))), h(CustomInput, { value: query, placeholder: "Search messages", onChangeText: setQuery, autoCorrect: false, style: { marginBottom: 10 } }), h(RN.View, { style: { flexDirection: "row", marginBottom: 10 } }, h(RN.View, { style: { flex: 1, marginRight: 6 } }, h(CustomAction, { title: isAll ? "Deselect all" : "Select all", secondary: true, onPress: () => setSelected((current) => isAll ? current.filter(id => !visible.some((m) => String(m.id) === id)) : Array.from(new Set(current.concat(visible.map((m) => String(m.id)))))) })), h(RN.View, { style: { flex: 1, marginLeft: 6 } }, h(CustomAction, { title: "Clear selection", secondary: true, onPress: () => setSelected([]) }))), visible.length ? h(RN.ScrollView, { style: { flex: 1 }, keyboardShouldPersistTaps: "handled", contentContainerStyle: { paddingBottom: 12 } }, h(CustomSection, { title: "Messages" }, ...visible.map((message, index) => {
         const id = String(message.id);
@@ -977,7 +971,7 @@ function BulkMessageSelector(props) {
         return h(CustomRow, { key: id, title: (id === seedId ? "Selected message · " : "") + author, subtitle: label, last: index === visible.length - 1,
             trailing: h(RN.View, { style: { width: 23, height: 23, borderRadius: 6, borderWidth: 1.5, borderColor: marked ? C.blurple : C.off, backgroundColor: marked ? C.blurple : "transparent", alignItems: "center", justifyContent: "center" } }, marked ? h(RN.Text, { style: { color: "#FFFFFF", fontSize: 15, fontWeight: "800" } }, "✓") : null),
             onPress: () => toggle(message) });
-    }))) : h(RN.View, { style: { flex: 1, alignItems: "center", justifyContent: "center" } }, h(RN.Text, { style: { color: C.sub } }, "No loaded messages match this search.")), h(CustomAction, { title: busy ? "Translating…" : "Translate " + selected.length + " messages", disabled: busy || !selected.length, onPress: run })));
+    }))) : h(RN.View, { style: { flex: 1, alignItems: "center", justifyContent: "center" } }, h(RN.Text, { style: { color: C.sub } }, "No loaded messages match this search.")), h(CustomAction, { title: busy ? "Opening translation…" : "Continue to translation · " + selected.length, disabled: busy || !selected.length, onPress: run })));
 }
 function refreshTranslated() {
     translations.forEach((t, id) => { if (t.ch)
@@ -1157,7 +1151,7 @@ function messagePlan(message) {
         plan.push({ key: "qt-original", label: "Show original message", press: () => showOriginal(actionMessage) });
     }
     else {
-        plan.push({ key: "qt-translate", label: "Translate to " + langName(qt.targetIn), press: () => openMessageTranslationPanel(actionMessage, qt.targetIn) });
+        plan.push({ key: "qt-translate", label: "Translate to " + langName(qt.targetIn), press: () => translateMessage(actionMessage, qt.targetIn, false, undefined, false, "auto") });
     }
     const channelId = String(message.channel_id || message.channelId || currentChannelId() || "");
     if (channelId)
@@ -1181,6 +1175,24 @@ function openMessageTranslationPanel(message, target) {
     pendingMessageRequest = {
         nonce: ++messageRequestNonce,
         message: { ...message, content: text },
+        target: target || qt.targetIn || "en",
+        source: "auto",
+    };
+    notifyButton();
+    return true;
+}
+function openBulkTranslationPanel(messages, target) {
+    const cleanMessages = (Array.isArray(messages) ? messages : []).map((message) => {
+        const text = typeof message?.content === "string" ? message.content : messageContentText(message?.content);
+        return text.trim() ? { ...message, content: text } : null;
+    }).filter(Boolean);
+    if (!cleanMessages.length) {
+        toast("No selected messages contain translatable text");
+        return false;
+    }
+    pendingMessageRequest = {
+        nonce: ++messageRequestNonce,
+        messages: cleanMessages,
         target: target || qt.targetIn || "en",
         source: "auto",
     };
@@ -1540,13 +1552,28 @@ function TranslateButton(props) {
     const activateOnce = () => {
         if (messageRequest) {
             setBusy(true);
-            const messageId = String(messageRequest.message.id || "");
+            const selectedMessages = Array.isArray(messageRequest.messages) ? messageRequest.messages : [messageRequest.message].filter(Boolean);
+            if (selectedMessages.length > 1) {
+                (async () => {
+                    let done = 0;
+                    for (const item of selectedMessages) {
+                        if (await translateMessage(item, target, true, undefined, false, source))
+                            done++;
+                    }
+                    setBusy(false);
+                    toast(done + " of " + selectedMessages.length + " messages translated");
+                    closePanel();
+                })();
+                return;
+            }
+            const item = selectedMessages[0];
+            const messageId = String(item?.id || "");
             const previousTranslationAt = translations.get(messageId)?.at;
-            translateMessage(messageRequest.message, target, false, undefined, false, source).then((ok) => {
+            translateMessage(item, target, false, undefined, false, source).then((ok) => {
                 setBusy(false);
                 const result = translations.get(messageId);
                 const translatedText = String(result?.text || "").trim();
-                const originalText = String(messageRequest.message.content || "").trim();
+                const originalText = String(item?.content || "").trim();
                 if (ok && result && result.at !== previousTranslationAt && translatedText && translatedText !== originalText)
                     closePanel();
             });
@@ -1573,8 +1600,8 @@ function TranslateButton(props) {
         .filter(([code, name]) => !query.trim() || name.toLowerCase().includes(query.trim().toLowerCase()) || code.toLowerCase().includes(query.trim().toLowerCase()));
     const panelBody = panelPage === "main"
         ? [
-            h(RN.Text, { key: "title", style: { color: paletteNow.text, fontSize: 22, fontWeight: "700", marginBottom: 4 } }, messageRequest ? "Translate message" : "Translate draft"),
-            h(RN.Text, { key: "hint", style: { color: paletteNow.sub, fontSize: 14, marginBottom: 16 } }, messageRequest ? "Choose languages, then translate this message once." : "Translate this draft once. Your chat’s default language stays unchanged."),
+            h(RN.Text, { key: "title", style: { color: paletteNow.text, fontSize: 22, fontWeight: "700", marginBottom: 4 } }, messageRequest ? (messageRequest.messages?.length > 1 ? "Translate messages" : "Translate message") : "Translate draft"),
+            h(RN.Text, { key: "hint", style: { color: paletteNow.sub, fontSize: 14, marginBottom: 16 } }, messageRequest ? (messageRequest.messages?.length > 1 ? "Choose languages, then translate " + messageRequest.messages.length + " selected messages once." : "Choose languages, then translate this message once.") : "Translate this draft once. Your chat’s default language stays unchanged."),
             h(CustomSection, { key: "languages", title: "Languages", compact: true }, h(CustomRow, { title: "Translate from", subtitle: languageLabel(source), icon: "↗", onPress: () => { setQuery(""); setPanelPage("source"); }, trailing: h(RN.Text, { style: { color: paletteNow.sub, fontSize: 20 } }, "›") }), h(CustomRow, { title: "Translate to", subtitle: languageLabel(target), icon: "↙", last: true, onPress: () => { setQuery(""); setPanelPage("target"); }, trailing: h(RN.Text, { style: { color: paletteNow.sub, fontSize: 20 } }, "›") })),
             favorites.length ? h(RN.View, { key: "favorites", style: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", marginTop: 8, marginBottom: 4 } }, ...favorites.map((code) => h(RN.Pressable, {
                 key: code,
@@ -1584,7 +1611,7 @@ function TranslateButton(props) {
                 accessibilityState: { selected: code === target },
                 style: { minHeight: 40, paddingHorizontal: 13, paddingVertical: 8, borderRadius: 20, marginRight: 7, marginBottom: 7, alignItems: "center", justifyContent: "center", backgroundColor: code === target ? paletteNow.blurple : paletteNow.chip },
             }, h(RN.Text, { numberOfLines: 1, adjustsFontSizeToFit: true, style: { color: paletteNow.text, fontSize: 13, fontWeight: "600" } }, languageLabel(code))))) : null,
-            h(CustomSection, { key: "once-section", title: "Translate once", compact: true }, h(RN.Text, { style: { color: paletteNow.sub, fontSize: 12, lineHeight: 16, paddingHorizontal: 14, paddingTop: 4 } }, messageRequest ? "Translate this message with your selected service and language." : "Arms the Translate button for one draft. After it translates, your usual language is restored."), h(RN.View, { style: { paddingHorizontal: 12, paddingBottom: 8 } }, h(CustomAction, { title: busy ? "Translating…" : (messageRequest ? "Translate once · " : "Activate once · ") + langName(target), disabled: busy, onPress: activateOnce }))),
+            h(CustomSection, { key: "once-section", title: "Translate once", compact: true }, h(RN.Text, { style: { color: paletteNow.sub, fontSize: 12, lineHeight: 16, paddingHorizontal: 14, paddingTop: 4 } }, messageRequest ? (messageRequest.messages?.length > 1 ? "Translate the selected messages with your chosen service and language." : "Translate this message with your selected service and language.") : "Arms the Translate button for one draft. After it translates, your usual language is restored."), h(RN.View, { style: { paddingHorizontal: 12, paddingBottom: 8 } }, h(CustomAction, { title: busy ? "Translating…" : (messageRequest ? "Translate once · " : "Activate once · ") + langName(target), disabled: busy, onPress: activateOnce }))),
             !messageRequest ? h(CustomSection, { key: "permanent-section", title: "Permanent language", compact: true }, h(RN.Text, { style: { color: paletteNow.sub, fontSize: 12, lineHeight: 16, paddingHorizontal: 14, paddingTop: 4 } }, "Changes the usual target for this chat until you choose another language."), h(RN.View, { style: { paddingHorizontal: 12, paddingBottom: 8 } }, h(CustomAction, { title: "Set " + langName(target) + " as usual", secondary: true, onPress: setPermanentLanguage }))) : null,
             !messageRequest && lastOriginal != null ? h(CustomAction, { key: "restore", title: "Restore original text", secondary: true, onPress: () => { closePanel(); restoreOriginal(); } }) : null,
             !messageRequest && armed ? h(CustomAction, { key: "disable", title: "Turn off Translate", secondary: true, onPress: () => { armed = null; notifyButton(); closePanel(); } }) : null,
@@ -1633,7 +1660,7 @@ function TranslateButton(props) {
     }, icon), panelOpen ? h(RN.Modal, { visible: true, transparent: true, animationType: "none", onRequestClose: closePanel }, h(RN.View, { style: { flex: 1, justifyContent: "flex-end" } }, h(RN.Animated.View, { pointerEvents: "box-none", style: { position: "absolute", top: 0, bottom: 0, left: 0, right: 0, backgroundColor: "rgba(0,0,0,0.52)", opacity: backdropProgress } }, h(RN.Pressable, { style: { flex: 1 }, onPress: closePanel })), h(RN.Animated.View, {
         style: { maxHeight: "88%", backgroundColor: paletteNow.bg, borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingHorizontal: 16, paddingTop: 14, paddingBottom: 28,
             transform: [{ translateY: sheetProgress.interpolate({ inputRange: [0, 1], outputRange: [sheetTravel, 0] }) }] },
-    }, h(RN.View, { ...sheetPanResponder.panHandlers, accessibilityLabel: "Drag down to close translate menu", accessibilityHint: "Swipe down to dismiss", style: { height: 44, marginBottom: 10, flexDirection: "row", alignItems: "center", justifyContent: "center" } }, h(RN.View, { style: { width: 72, height: 44, alignItems: "center", justifyContent: "center" } }, h(RN.View, { style: { width: 38, height: 5, borderRadius: 3, backgroundColor: paletteNow.off } })), h(RN.Pressable, { onPress: closePanel, accessibilityRole: "button", accessibilityLabel: "Close translate menu", hitSlop: 10, style: { position: "absolute", top: 0, right: 0, width: 38, height: 38, borderRadius: 19, backgroundColor: paletteNow.chip, alignItems: "center", justifyContent: "center" } }, h(RN.Text, { style: { color: paletteNow.text, fontSize: 24, lineHeight: 28, fontWeight: "500" } }, String.fromCharCode(215)))), panelPage === "main" ? h(RN.ScrollView, { keyboardShouldPersistTaps: "handled", showsVerticalScrollIndicator: false, style: { flexShrink: 1 }, contentContainerStyle: { paddingBottom: 8 } }, ...panelBody) : h(RN.ScrollView, { keyboardShouldPersistTaps: "handled" }, ...panelBody)))) : null, bulkSelectionRequest ? h(BulkMessageSelector, { key: bulkSelectionRequest.nonce, request: bulkSelectionRequest, onClose: () => { bulkSelectionRequest = null; notifyButton(); } }) : null);
+    }, h(RN.View, { ...sheetPanResponder.panHandlers, accessibilityLabel: "Drag down to close translate menu", accessibilityHint: "Swipe down to dismiss", style: { height: 44, marginBottom: 10, flexDirection: "row", alignItems: "center", justifyContent: "center" } }, h(RN.View, { style: { width: 72, height: 44, alignItems: "center", justifyContent: "center" } }, h(RN.View, { style: { width: 38, height: 5, borderRadius: 3, backgroundColor: paletteNow.off } })), h(RN.Pressable, { onPress: closePanel, accessibilityRole: "button", accessibilityLabel: "Close translate menu", hitSlop: 10, style: { position: "absolute", top: 0, right: 0, width: 38, height: 38, borderRadius: 19, backgroundColor: paletteNow.chip, alignItems: "center", justifyContent: "center" } }, h(RN.Text, { style: { color: paletteNow.text, fontSize: 24, lineHeight: 28, fontWeight: "500" } }, String.fromCharCode(215)))), panelPage === "main" ? h(RN.ScrollView, { keyboardShouldPersistTaps: "handled", showsVerticalScrollIndicator: false, style: { flexShrink: 1 }, contentContainerStyle: { paddingBottom: 8 } }, ...panelBody) : h(RN.ScrollView, { keyboardShouldPersistTaps: "handled" }, ...panelBody)))) : null, bulkSelectionRequest ? h(BulkMessageSelector, { key: bulkSelectionRequest.nonce, request: bulkSelectionRequest, onClose: () => { bulkSelectionRequest = null; notifyButton(); }, onTranslate: (messages) => { bulkSelectionRequest = null; openBulkTranslationPanel(messages, qt.targetIn || "en"); } }) : null);
 }
 let sendButtonLook = null;
 function readButtonLook(node, depth) {
@@ -2147,7 +2174,7 @@ exports.default = {
     name: "Quick Translate",
     description: "Translate incoming and outgoing messages with Google Translate or DeepL.",
     id: "quicktranslate",
-    version: "1.0.3",
+    version: "1.0.4",
     start() {
         renderErrors = 0;
         step("textBridge", installTextBridge);
