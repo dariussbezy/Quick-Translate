@@ -11,7 +11,7 @@ const { ChannelStore, MessageStore, PrivateChannelSortStore, SelectedChannelStor
 /* ------------------------------------------------------------------ */
 /* constants + settings store                                          */
 /* ------------------------------------------------------------------ */
-const BUILD = "v1.0.5";
+const BUILD = "v1.0.6";
 const QT_TEXT_BRIDGE_KEY = "__rainQuickTranslateTextBridge";
 const FLAG_TOGGLE = 0x04000000;
 const ACCENT = "#8EA1FF";
@@ -1077,7 +1077,7 @@ function refreshTranslated() {
 }
 function showOriginal(message) {
     const channelId = message.channel_id || message.channelId || currentChannelId();
-    translations.delete(message.id);
+    translations.delete(String(message.id));
     refreshRow(channelId, message.id);
 }
 function paint(nodes, color) {
@@ -1160,11 +1160,15 @@ function decorate(row, input) {
     const rowType = input && input.rowType !== undefined ? input.rowType : row.rowType;
     if (rowType !== 1)
         return;
-    const tr = translations.get(m.id);
+    const tr = translations.get(String(m.id));
     const ours = m.__trOut && m.content === m.__trOut;
     if (!tr) {
-        if (ours)
-            m.content = m.__trBase;
+        if (ours) {
+            m.content = m.__trBaseRaw !== undefined ? m.__trBaseRaw : m.__trBase;
+            delete m.__trBaseRaw;
+            delete m.__trBase;
+            delete m.__trOut;
+        }
         else if (Array.isArray(m.content)) {
             const clean = stripOurs(m.content);
             if (clean.length !== m.content.length)
@@ -1172,7 +1176,18 @@ function decorate(row, input) {
         }
         return;
     }
-    const base = ours ? m.__trBase : Array.isArray(m.content) ? stripOurs(m.content) : null;
+    const originalContent = ours
+        ? (m.__trBaseRaw !== undefined ? m.__trBaseRaw : m.__trBase)
+        : m.content;
+    const base = ours
+        ? m.__trBase
+        : Array.isArray(m.content)
+            ? stripOurs(m.content)
+            : (m.content == null || (typeof m.content === "string" && !m.content.trim()))
+                ? []
+                : typeof m.content === "string"
+                    ? [{ type: "text", content: m.content }]
+                    : null;
     if (!Array.isArray(base))
         return;
     const pc = RN.processColor;
@@ -1192,6 +1207,7 @@ function decorate(row, input) {
         out = sourceHint.concat(paint(text, color));
     if (!out.length)
         return;
+    m.__trBaseRaw = originalContent;
     m.__trBase = base;
     m.__trOut = out;
     m.content = out;
@@ -1245,7 +1261,7 @@ function messagePlan(message) {
     if (!text.trim()) return null;
     const actionMessage = typeof message.content === "string" ? message : { ...message, content: text };
     const plan = [];
-    if (translations.has(message.id)) {
+    if (translations.has(String(message.id))) {
         plan.push({ key: "qt-original", label: "Show original message", press: () => showOriginal(actionMessage) });
     }
     else {
@@ -1259,7 +1275,7 @@ function messagePlan(message) {
         label: "Translate to...",
         press: () => openMessageTranslationPanel(actionMessage, qt.targetIn),
     });
-    const translated = translations.get(message.id);
+    const translated = translations.get(String(message.id));
     if (translated?.text)
         plan.push({ key: "qt-copy-translation", label: "Copy translation", press: () => copyText(translated.text) });
     return plan;
@@ -2283,7 +2299,7 @@ exports.default = {
     name: "Quick Translate",
     description: "Translate incoming and outgoing messages with Google Translate or DeepL.",
     id: "quicktranslate",
-    version: "1.0.5",
+    version: "1.0.6",
     start() {
         renderErrors = 0;
         step("textBridge", installTextBridge);
