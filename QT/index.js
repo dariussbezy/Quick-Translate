@@ -11,7 +11,7 @@ const { ChannelStore, MessageStore, PrivateChannelSortStore, SelectedChannelStor
 /* ------------------------------------------------------------------ */
 /* constants + settings store                                          */
 /* ------------------------------------------------------------------ */
-const BUILD = "v1.0.1";
+const BUILD = "v1.0.2";
 const QT_TEXT_BRIDGE_KEY = "__rainQuickTranslateTextBridge";
 const FLAG_TOGGLE = 0x04000000;
 const ACCENT = "#8EA1FF";
@@ -98,6 +98,8 @@ let requestTail = Promise.resolve();
 let lastRequestAt = 0;
 let bulkSelectionRequest = null;
 let bulkSelectionNonce = 0;
+let pendingMessageRequest = null;
+let messageRequestNonce = 0;
 const toast = (t) => { try {
     showToast(t);
 }
@@ -854,7 +856,7 @@ function refreshRow(channelId, id) {
         catch (_) { /* ignore */ }
     }, 0);
 }
-function translateMessage(message, tl, silent = false, immersiveOverride, autoIncoming = false) {
+function translateMessage(message, tl, silent = false, immersiveOverride, autoIncoming = false, sourceOverride = "auto") {
     const text = message && message.content;
     if (typeof text !== "string" || !text.trim()) {
         if (!silent)
@@ -864,7 +866,7 @@ function translateMessage(message, tl, silent = false, immersiveOverride, autoIn
     const channelId = message.channel_id || message.channelId || currentChannelId();
     if (!silent)
         toast("Translating...");
-    return translate(text, tl, "auto", true, channelId, message.id != null ? String(message.id) : null).then(r => {
+    return translate(text, tl, sourceOverride || "auto", true, channelId, message.id != null ? String(message.id) : null).then(r => {
         if (r.same) {
             if (!silent)
                 toast("Already in " + langName(tl));
@@ -1155,7 +1157,7 @@ function messagePlan(message) {
         plan.push({ key: "qt-original", label: "Show original message", press: () => showOriginal(actionMessage) });
     }
     else {
-        plan.push({ key: "qt-translate", label: "Translate to " + langName(qt.targetIn), press: () => translateMessage(actionMessage, qt.targetIn) });
+        plan.push({ key: "qt-translate", label: "Translate to " + langName(qt.targetIn), press: () => openMessageTranslationPanel(actionMessage, qt.targetIn) });
     }
     const channelId = String(message.channel_id || message.channelId || currentChannelId() || "");
     if (channelId)
@@ -1163,12 +1165,27 @@ function messagePlan(message) {
     plan.push({
         key: "qt-translate-to",
         label: "Translate to...",
-        press: () => showLanguagePicker("Translate to", (code) => translateMessage(actionMessage, code)),
+        press: () => openMessageTranslationPanel(actionMessage, qt.targetIn),
     });
     const translated = translations.get(message.id);
     if (translated?.text)
         plan.push({ key: "qt-copy-translation", label: "Copy translation", press: () => copyText(translated.text) });
     return plan;
+}
+function openMessageTranslationPanel(message, target) {
+    const text = typeof message?.content === "string" ? message.content : messageContentText(message?.content);
+    if (!text.trim()) {
+        toast("This message has no text to translate");
+        return false;
+    }
+    pendingMessageRequest = {
+        nonce: ++messageRequestNonce,
+        message: { ...message, content: text },
+        target: target || qt.targetIn || "en",
+        source: "auto",
+    };
+    notifyButton();
+    return true;
 }
 function installTextBridge() {
     const root = globalThis;
@@ -1310,6 +1327,8 @@ function TranslateButton(props) {
     const [source, setSource] = React.useState(getChatLanguages().sourceOut || "auto");
     const [target, setTarget] = React.useState(getChatLanguages().targetOut || "en");
     const [query, setQuery] = React.useState("");
+    const [messageRequest, setMessageRequest] = React.useState(null);
+    const seenMessageRequest = React.useRef(0);
     const didLongPress = React.useRef(false);
     const pressTimer = React.useRef(null);
     const sheetProgress = React.useRef(new RN.Animated.Value(0)).current;
@@ -1318,7 +1337,22 @@ function TranslateButton(props) {
     const buttonScale = React.useRef(new RN.Animated.Value(1)).current;
     const [, tick] = React.useState(0);
     React.useEffect(() => {
-        const f = () => tick((x) => x + 1);
+        const f = () => {
+            tick((x) => x + 1);
+            const request = pendingMessageRequest;
+            const anchor = useQuickTranslate.getState()?.anchor;
+            const panelHostPosition = anchor === "send" ? "send" : "actions";
+            if (props.position !== panelHostPosition || !request || request.nonce === seenMessageRequest.current)
+                return;
+            seenMessageRequest.current = request.nonce;
+            setMessageRequest(request);
+            setSource(request.source || "auto");
+            setTarget(request.target || qt.targetIn || "en");
+            setQuery("");
+            setPanelPage("main");
+            closingPanel.current = false;
+            setPanelOpen(true);
+        };
         buttonListeners.add(f);
         return () => { buttonListeners.delete(f); if (pressTimer.current)
             clearTimeout(pressTimer.current); };
@@ -1334,7 +1368,7 @@ function TranslateButton(props) {
             RN.Animated.timing(backdropProgress, { toValue: 1, duration: 220, useNativeDriver: true }),
         ]).start();
     }, [panelOpen]);
-    if (settings.showButton === false)
+    if (settings.showButton === false && !messageRequest)
         return null;
     if (props.position === "actions" && settings.anchor !== "actions")
         return null;
@@ -1437,6 +1471,9 @@ function TranslateButton(props) {
                 setPanelOpen(false);
                 setPanelPage("main");
                 setQuery("");
+                if (messageRequest && pendingMessageRequest?.nonce === messageRequest.nonce)
+                    pendingMessageRequest = null;
+                setMessageRequest(null);
             }
             closingPanel.current = false;
         });
@@ -1484,6 +1521,15 @@ function TranslateButton(props) {
         setQuery("");
     };
     const activateOnce = () => {
+        if (messageRequest) {
+            setBusy(true);
+            translateMessage(messageRequest.message, target, false, undefined, false, source).then((ok) => {
+                setBusy(false);
+                if (ok)
+                    closePanel();
+            });
+            return;
+        }
         const resume = armed?.oneShot ? armed.resume || null : armed;
         armed = { tl: target, sl: source, oneShot: true, resume };
         notifyButton();
@@ -1505,8 +1551,8 @@ function TranslateButton(props) {
         .filter(([code, name]) => !query.trim() || name.toLowerCase().includes(query.trim().toLowerCase()) || code.toLowerCase().includes(query.trim().toLowerCase()));
     const panelBody = panelPage === "main"
         ? [
-            h(RN.Text, { key: "title", style: { color: paletteNow.text, fontSize: 22, fontWeight: "700", marginBottom: 4 } }, "Translate draft"),
-            h(RN.Text, { key: "hint", style: { color: paletteNow.sub, fontSize: 14, marginBottom: 16 } }, "Translate this draft once. Your chat’s default language stays unchanged."),
+            h(RN.Text, { key: "title", style: { color: paletteNow.text, fontSize: 22, fontWeight: "700", marginBottom: 4 } }, messageRequest ? "Translate message" : "Translate draft"),
+            h(RN.Text, { key: "hint", style: { color: paletteNow.sub, fontSize: 14, marginBottom: 16 } }, messageRequest ? "Choose languages, then translate this message once." : "Translate this draft once. Your chat’s default language stays unchanged."),
             h(CustomSection, { key: "languages", title: "Languages", compact: true }, h(CustomRow, { title: "Translate from", subtitle: languageLabel(source), icon: "↗", onPress: () => { setQuery(""); setPanelPage("source"); }, trailing: h(RN.Text, { style: { color: paletteNow.sub, fontSize: 20 } }, "›") }), h(CustomRow, { title: "Translate to", subtitle: languageLabel(target), icon: "↙", last: true, onPress: () => { setQuery(""); setPanelPage("target"); }, trailing: h(RN.Text, { style: { color: paletteNow.sub, fontSize: 20 } }, "›") })),
             favorites.length ? h(RN.View, { key: "favorites", style: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", marginTop: 8, marginBottom: 4 } }, ...favorites.map((code) => h(RN.Pressable, {
                 key: code,
@@ -1516,10 +1562,10 @@ function TranslateButton(props) {
                 accessibilityState: { selected: code === target },
                 style: { minHeight: 40, paddingHorizontal: 13, paddingVertical: 8, borderRadius: 20, marginRight: 7, marginBottom: 7, alignItems: "center", justifyContent: "center", backgroundColor: code === target ? paletteNow.blurple : paletteNow.chip },
             }, h(RN.Text, { numberOfLines: 1, adjustsFontSizeToFit: true, style: { color: paletteNow.text, fontSize: 13, fontWeight: "600" } }, languageLabel(code))))) : null,
-            h(CustomSection, { key: "once-section", title: "Translate once", compact: true }, h(RN.Text, { style: { color: paletteNow.sub, fontSize: 12, lineHeight: 16, paddingHorizontal: 14, paddingTop: 4 } }, "Arms the Translate button for one draft. After it translates, your usual language is restored."), h(RN.View, { style: { paddingHorizontal: 12, paddingBottom: 8 } }, h(CustomAction, { title: busy ? "Translating…" : "Activate once · " + langName(target), disabled: busy, onPress: activateOnce }))),
-            h(CustomSection, { key: "permanent-section", title: "Permanent language", compact: true }, h(RN.Text, { style: { color: paletteNow.sub, fontSize: 12, lineHeight: 16, paddingHorizontal: 14, paddingTop: 4 } }, "Changes the usual target for this chat until you choose another language."), h(RN.View, { style: { paddingHorizontal: 12, paddingBottom: 8 } }, h(CustomAction, { title: "Set " + langName(target) + " as usual", secondary: true, onPress: setPermanentLanguage }))),
-            lastOriginal != null ? h(CustomAction, { key: "restore", title: "Restore original text", secondary: true, onPress: () => { closePanel(); restoreOriginal(); } }) : null,
-            armed ? h(CustomAction, { key: "disable", title: "Turn off Translate", secondary: true, onPress: () => { armed = null; notifyButton(); closePanel(); } }) : null,
+            h(CustomSection, { key: "once-section", title: "Translate once", compact: true }, h(RN.Text, { style: { color: paletteNow.sub, fontSize: 12, lineHeight: 16, paddingHorizontal: 14, paddingTop: 4 } }, messageRequest ? "Translate this message with your selected service and language." : "Arms the Translate button for one draft. After it translates, your usual language is restored."), h(RN.View, { style: { paddingHorizontal: 12, paddingBottom: 8 } }, h(CustomAction, { title: busy ? "Translating…" : (messageRequest ? "Translate once · " : "Activate once · ") + langName(target), disabled: busy, onPress: activateOnce }))),
+            !messageRequest ? h(CustomSection, { key: "permanent-section", title: "Permanent language", compact: true }, h(RN.Text, { style: { color: paletteNow.sub, fontSize: 12, lineHeight: 16, paddingHorizontal: 14, paddingTop: 4 } }, "Changes the usual target for this chat until you choose another language."), h(RN.View, { style: { paddingHorizontal: 12, paddingBottom: 8 } }, h(CustomAction, { title: "Set " + langName(target) + " as usual", secondary: true, onPress: setPermanentLanguage }))) : null,
+            !messageRequest && lastOriginal != null ? h(CustomAction, { key: "restore", title: "Restore original text", secondary: true, onPress: () => { closePanel(); restoreOriginal(); } }) : null,
+            !messageRequest && armed ? h(CustomAction, { key: "disable", title: "Turn off Translate", secondary: true, onPress: () => { armed = null; notifyButton(); closePanel(); } }) : null,
             
         ]
         : [
@@ -2079,7 +2125,7 @@ exports.default = {
     name: "Quick Translate",
     description: "Translate incoming and outgoing messages with Google Translate or DeepL.",
     id: "quicktranslate",
-    version: "1.0.1",
+    version: "1.0.2",
     start() {
         renderErrors = 0;
         step("textBridge", installTextBridge);
