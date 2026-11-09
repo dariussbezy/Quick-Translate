@@ -5172,7 +5172,14 @@ function Settings() {
         icon: "☷",
         trailing: h(RN.Text, { style: { color: C.sub, fontSize: 21 } }, "›"),
         last: true,
-        onPress: () => go("Automatic channels and DMs", AutoChannelsPage),
+        onPress: () => {
+          toast("Loading, please wait…");
+          const timer = setTimeout(() => {
+            if (pluginStarted)
+              go("Automatic channels and DMs", AutoChannelsPage);
+          }, 100);
+          unpatches.push(() => clearTimeout(timer));
+        },
       }),
     ),
     h(

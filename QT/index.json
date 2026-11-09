@@ -14,8 +14,8 @@
       "versions": {
         "1.0.0-beta": {
           "url": "https://raw.githubusercontent.com/dariussbezy/Quick-Translate/refs/heads/main/QT/Quick-Translate-Valenced-1.0.0-beta.zip",
-          "sha256": "36f92997b7765912958701e7805a8c2a2a62d5dae59800dd015f14dde8a19e03",
-          "size": 35350,
+          "sha256": "1cc59f4076257f11148771d83254770604e147889ee5a2b394345529c5958a1b",
+          "size": 35384,
           "dependencies": {
             "valenced.api": {
               "version": ">=1 <2"
