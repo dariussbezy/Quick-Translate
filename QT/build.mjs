@@ -29,7 +29,7 @@ await writeFile("build/quick-translate.zip", archive);
 await writeFile("index.js", script);
 await writeFile(archiveName, archive);
 const base =
-  "https://raw.githubusercontent.com/dariussbezy/Quick-Translate/refs/heads/codex/quick-translate-valenced-beta/QT";
+  "https://raw.githubusercontent.com/dariussbezy/Quick-Translate/refs/heads/main/QT";
 const { generateIndex } = await import("./build/official-generate-index.mjs");
 const config = JSON.parse(await readFile("repo.config.json", "utf8"));
 const archives = (await readdir("."))

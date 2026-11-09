@@ -20,6 +20,12 @@ test("repository index serves the current version and authenticates every ZIP", 
     const url = new URL(artifact.url);
     assert.equal(url.protocol, "https:");
     assert.equal(url.hostname, "raw.githubusercontent.com");
+    assert.ok(
+      url.pathname.startsWith(
+        "/dariussbezy/Quick-Translate/refs/heads/main/QT/",
+      ),
+      "Published artifacts must come from main",
+    );
     const bytes = readFileSync(new URL(url.pathname.split("/").at(-1)!, root));
     assert.equal(bytes.length, artifact.size);
     assert.equal(
@@ -37,5 +43,41 @@ test("repository index serves the current version and authenticates every ZIP", 
     assert.equal(packed.version, version);
     assert.equal(packed.id, manifest.id);
     assert.deepEqual(packed.dependencies, artifact.dependencies);
+  }
+});
+
+test("current release accepts Plugin API 1.0.0 shipped with Valenced", async () => {
+  const { parseVersion, compareVersions } =
+    await import("../tooling/official-cli/generate-index.ts");
+  const index = JSON.parse(
+    readFileSync(new URL("../index.json", import.meta.url), "utf8"),
+  );
+  const plugin = index.plugins["dariuss.quick-translate"];
+  const current = plugin.versions[plugin.channels.latest];
+  const hostVersions: Record<string, string> = {
+    "valenced.api": "1.0.0",
+    discord: "352.6",
+  };
+  for (const [id, hostVersion] of Object.entries(hostVersions)) {
+    const range = current.dependencies[id].version as string;
+    const constraints = [...range.matchAll(/(>=|<=|>|<|=)\s*([\d.]+)/g)];
+    assert.ok(constraints.length > 0, `Missing version constraints for ${id}`);
+    for (const [, operator, version] of constraints) {
+      const compared = compareVersions(
+        parseVersion(hostVersion),
+        parseVersion(version),
+      );
+      const matches =
+        operator === ">="
+          ? compared >= 0
+          : operator === "<="
+            ? compared <= 0
+            : operator === ">"
+              ? compared > 0
+              : operator === "<"
+                ? compared < 0
+                : compared === 0;
+      assert.ok(matches, `${id} ${hostVersion} must satisfy ${range}`);
+    }
   }
 });

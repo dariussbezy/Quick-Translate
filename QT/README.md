@@ -1,8 +1,14 @@
-# Quick Translate for Valenced — 2.0.0-beta2
+# Quick Translate for Valenced — 2.0.0-beta3
 
 A fresh TypeScript implementation based on the behavior of the old Rain plugin. The old source is not included. The interface, language names, and documentation are in English.
 
-Target: **Valenced 1.3.0 and Discord 352.6 Alpha**. The manifest accepts Valenced API `>=1.3 <2` and Discord `>=352.6 <352.7`. These constraints declare the intended target; they do not replace device testing.
+Target: **Valenced 1.3.0 and Discord 352.6 Alpha**. The manifest accepts Valenced API `>=1 <2` and Discord `>=352.6 <352.7`. These constraints declare the intended target; they do not replace device testing.
+
+## Fixed in beta3
+
+The Valenced app version (1.3.0) is different from its Plugin API version (1.0.0). The old `>=1.3 <2` API requirement prevented installation. Beta3 declares `>=1 <2`, matching the API version defined by Valenced in `gradle/libs.versions.toml`. The build and generated index now use `main`.
+
+If you added the previous branch-based repository, remove that entry and add the main-branch URL below. This does not uninstall an installed plugin.
 
 ## Install using a repository URL
 
@@ -10,7 +16,7 @@ Target: **Valenced 1.3.0 and Discord 352.6 Alpha**. The manifest accepts Valence
 2. Paste this full URL into **Repository URL**, then tap **Add repository**:
 
 ```text
-https://raw.githubusercontent.com/dariussbezy/Quick-Translate/refs/heads/codex/quick-translate-valenced-beta/QT/index.json
+https://raw.githubusercontent.com/dariussbezy/Quick-Translate/refs/heads/main/QT/index.json
 ```
 
 3. Return to **Plugins**, tap **+**, find **Quick Translate**, and install it.
@@ -21,11 +27,11 @@ Use the full `index.json` URL above. A GitHub repository page URL is not a Valen
 
 Future published builds can be installed through Valenced's repository updates. If you installed beta1 from a ZIP, add this repository and use the plugin's **Updates → Repository** option to select Quick Translate as its source.
 
-This repository currently points its `latest` channel to a **beta** build for testing. Both the index and plugin artifacts stay under `QT` on the `codex/quick-translate-valenced-beta` branch. The main branch is unchanged.
+This repository currently points its `latest` channel to a **beta** build for testing. The index, plugin artifacts, source, and future updates live under `QT` on `main`.
 
 ## Install from a ZIP instead
 
-Download the [beta2 plugin ZIP](https://github.com/dariussbezy/Quick-Translate/raw/refs/heads/codex/quick-translate-valenced-beta/QT/Quick-Translate-Valenced-2.0.0-beta2.zip), then use **Install from file** in Valenced repository settings. Do not extract it or use GitHub's whole-repository “Download ZIP” as a plugin. ZIP-only installations have no automatic update source until you select a repository.
+Download the [beta3 plugin ZIP](https://github.com/dariussbezy/Quick-Translate/raw/refs/heads/main/QT/Quick-Translate-Valenced-2.0.0-beta3.zip), then use **Install from file** in Valenced repository settings. Do not extract it or use GitHub's whole-repository “Download ZIP” as a plugin. ZIP-only installations have no automatic update source until you select a repository.
 
 Plugin ID: `dariuss.quick-translate`. Rain/Kettu settings are not imported automatically.
 

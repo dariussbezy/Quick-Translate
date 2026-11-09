@@ -474,7 +474,7 @@ export function Preferences({
           Quick Translate
         </Design.Text>
         <Design.Text variant="text-sm/normal" color="always-white">
-          Valenced · 2.0.0 beta 2 · Built from scratch
+          Valenced · 2.0.0 beta 3 · Built from scratch
         </Design.Text>
       </View>
       <Action title="Open translator" onPress={() => runtime.open()} />
