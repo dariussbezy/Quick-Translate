@@ -272,6 +272,10 @@ export async function fetchWithTimeout(url: string, options: RequestInit = {}) {
   if (!running) throw new Error("Quick Translate is stopped");
   const requestEpoch = epoch,
     controller = new AbortController();
+  const upstream = options.signal;
+  const abort = () => controller.abort();
+  if (upstream?.aborted) throw new Error("Translation cancelled");
+  upstream?.addEventListener("abort", abort, { once: true });
   controllers.add(controller);
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
@@ -296,6 +300,7 @@ export async function fetchWithTimeout(url: string, options: RequestInit = {}) {
   } finally {
     clearTimeout(timer);
     controllers.delete(controller);
+    upstream?.removeEventListener("abort", abort);
   }
 }
 function showSimpleActionSheet(config: {

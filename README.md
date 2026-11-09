@@ -17,6 +17,8 @@ Translate Discord messages and drafts with Google Translate or DeepL, using the 
 - **Local translation history** supports copying, jumping to the original message and comparing providers.
 - **Chat bar options** place Translate next to + or Send and optionally hide Gift.
 
+- Identify missing transcript languages for Voice Messages To Text without creating another translation or history entry.
+
 ## Installation
 
 In Valenced, open **Plugins → Advanced → Repository URL**, paste this address and add the repository:
@@ -30,5 +32,7 @@ Find **Quick Translate**, install it and enable it. Open the plugin's settings t
 ## Privacy
 
 Translation sends the text being translated to the selected provider. DeepL requires your own API key; Google Translate does not. If DeepL fails, the plugin can send that text to Google as a fallback. Automatic translation processes incoming text in the channels and DMs you select.
+
+When Voice Messages To Text requests fallback language detection, a language-only Google request processes up to 2,000 characters of the transcript. It does not create a translated message or saved history entry.
 
 Settings, saved translations, history and the DeepL key are stored locally through Valenced. You can turn off history, clear saved translation data, and remove your API key in the plugin settings.

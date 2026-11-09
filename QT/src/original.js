@@ -2893,7 +2893,67 @@ function openBulkTranslationPanel(messages, target) {
 }
 function installTextBridge() {
   const root = globalThis;
+  const detections = new Map();
+  async function detectLanguage(input, options = {}) {
+    const text = String(input || "")
+      .trim()
+      .slice(0, 2000);
+    if (!pluginStarted || options.signal?.aborted || !/[\p{L}]/u.test(text))
+      return null;
+    // Exact configured phrases can resolve short ambiguous transcripts without a request.
+    const exact = text
+      .toLocaleLowerCase()
+      .replace(/[.!?]+$/, "")
+      .trim();
+    const rule = (
+      Array.isArray(qt.wordLanguageRules) ? qt.wordLanguageRules : []
+    ).find(
+      (rule) =>
+        rule?.word?.trim().toLocaleLowerCase() === exact &&
+        rule.language !== "auto" &&
+        LANG_NAME.has(rule.language),
+    );
+    if (rule) return { code: rule.language, name: langName(rule.language) };
+    if (detections.has(text)) return detections.get(text);
+    const generation = cacheGeneration;
+    try {
+      const detected = await enqueueRequest(async () => {
+        if (!pluginStarted || options.signal?.aborted) return null;
+        const response = await fetchWithTimeout(
+          "https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=en&dt=ld&q=" +
+            encodeURIComponent(text),
+          { signal: options.signal },
+        );
+        if (!response.ok) return null;
+        const json = await response.json();
+        const code = typeof json?.[2] === "string" ? json[2] : "";
+        if (
+          !code ||
+          code === "auto" ||
+          !pluginStarted ||
+          generation !== cacheGeneration ||
+          options.signal?.aborted
+        )
+          return null;
+        return { code, name: langName(code) };
+      }, !!options.automatic);
+      if (
+        detected &&
+        pluginStarted &&
+        generation === cacheGeneration &&
+        !options.signal?.aborted
+      ) {
+        detections.set(text, detected);
+        while (detections.size > 100)
+          detections.delete(detections.keys().next().value);
+      }
+      return detected;
+    } catch {
+      return null;
+    }
+  }
   const api = {
+    detectLanguage,
     isActive: () => pluginStarted,
     getMessageActions: (message) => {
       if (!pluginStarted) return [];
@@ -2931,6 +2991,7 @@ function installTextBridge() {
   root["__valencedQuickTranslateTextBridge"] = api;
   unpatches.push(() => {
     pluginStarted = false;
+    detections.clear();
     if (root["__valencedQuickTranslateTextBridge"] === api)
       delete root["__valencedQuickTranslateTextBridge"];
   });
