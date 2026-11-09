@@ -363,7 +363,7 @@ export function environment() {
     if (typeof value === "symbol") return String(value);
     if (typeof value === "string")
       return value.replace(
-        /Quick Translate v(?:1\.0\.8|2\.0\.0-beta4)/g,
+        /Quick Translate v(?:1\.0\.8|2\.0\.0-beta\d+)/g,
         "Quick Translate <version>",
       );
     if (Array.isArray(value)) return Array.from(value, (x) => normalize(x));

@@ -1,8 +1,15 @@
-# Quick Translate for Valenced — 2.0.0-beta4
+# Quick Translate for Valenced — 2.0.0-beta5
 
 Beta4 restores the uploaded Quick Translate 1.0.8 design and behavior. It adapts that source for Valenced instead of using the simplified interface from beta1–beta3. All labels remain in English.
 
 Source, compiled files, and repository updates are published under `QT` on `main`.
+
+## Fixed in beta5
+
+- Chat translations now recognize Discord's current `type` field and explicitly mark native rows for rebinding. Removing a translation also marks the row changed, without editing the underlying message or toggling message flags.
+- Translation color settings and preset rows show swatches/names without hex codes.
+- The incoming-language setting is now **Quick translate messages to**, with its existing icon retained.
+- The bulk selection's seed message is selected immediately. Enabled/disabled opacity is applied to the normal button container rather than the animated view, preventing a stale dimmed appearance.
 
 ## Install or update
 
@@ -12,11 +19,11 @@ Repository URL:
 https://raw.githubusercontent.com/dariussbezy/Quick-Translate/refs/heads/main/QT/index.json
 ```
 
-In Valenced repository settings, add this URL. Open **Plugins → +** to install Quick Translate, then enable it and reload Discord. If it is already installed from this repository, use **Check for updates**, install **2.0.0-beta4**, and reload.
+In Valenced repository settings, add this URL. Open **Plugins → +** to install Quick Translate, then enable it and reload Discord. If it is already installed from this repository, use **Check for updates**, install **2.0.0-beta5**, and reload.
 
 The plugin ID is still `dariuss.quick-translate`. You do not need to uninstall or clear your settings. Preferences and compatible history from previous Valenced betas are retained. If you previously added the branch-based URL, replace that repository entry with the main URL above.
 
-[Direct beta4 ZIP](https://github.com/dariussbezy/Quick-Translate/raw/refs/heads/main/QT/Quick-Translate-Valenced-2.0.0-beta4.zip) is also available for **Install from file**.
+[Direct beta5 ZIP](https://github.com/dariussbezy/Quick-Translate/raw/refs/heads/main/QT/Quick-Translate-Valenced-2.0.0-beta5.zip) is also available for **Install from file**.
 
 Target: **Valenced app 1.3.0, Plugin API 1.0.0, Discord 352.6 Alpha**. App and API version numbers are different; the manifest correctly declares Plugin API `>=1 <2`.
 
@@ -54,7 +61,7 @@ The obsolete Rain global bridge and simplified beta1–beta3 implementation are 
 
 ## Verification and limits
 
-Automated checks compare the adapted rendered layouts with the uploaded original in light and dark themes, including settings subpages, the bulk selector, and each page of the composer modal. Callback identities and the version footer are normalized for comparison. This verifies component structure and style values; it is not an on-device screenshot or animation test.
+Automated checks compare the adapted rendered layouts with the uploaded original in light and dark themes, including settings subpages, the bulk selector, and each page of the composer modal. Callback identities, the version footer, and the explicitly requested beta5 UI changes are normalized for comparison. This verifies component structure and style values; it is not an on-device screenshot or animation test.
 
 Functional checks cover draft translation, message actions, sender arguments, original message preservation, provider fallback, rate limiting, cancellation, per-chat preferences, bulk history loading, history actions, background auto-translation, lifecycle cleanup, and the official compiled bundle's Valenced API paths. The repository index and ZIP checksums are also checked.
 

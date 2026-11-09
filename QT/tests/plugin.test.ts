@@ -261,7 +261,8 @@ test("translated message rows retain original typography and do not mutate cache
     };
     env.messages.set("c:m", message);
     const row = {
-      rowType: 1,
+      type: 1,
+      changeType: 0,
       message: {
         id: "m",
         channelId: "c",
@@ -278,13 +279,32 @@ test("translated message rows retain original typography and do not mutate cache
     const plan = port.implementation.messagePlan(message);
     plan[0].press();
     await new Promise((resolve) => setTimeout(resolve, 10));
-    const rendered = new RowManager().generate({ rowType: 1 });
+    const manager = new RowManager();
+    const rendered = manager.generate({ message });
     assert.equal(message.content, "Hello");
     assert.deepEqual(row.message.content, [{ type: "text", content: "Hello" }]);
     assert.ok(JSON.stringify(rendered).includes("Salut"));
+    assert.equal(
+      rendered.changeType,
+      2,
+      "Native rows must be marked changed to bind the translation",
+    );
     assert.ok(JSON.stringify(rendered).includes("Hello"));
     assert.ok(JSON.stringify(rendered).includes("#8EA1FF"));
     assert.ok(!env.dispatches.some((e) => e.message?.flags !== undefined));
+    port.implementation.showOriginal(message);
+    const restored = manager.generate({ message });
+    assert.equal(
+      restored.changeType,
+      2,
+      "Removing the translation must also redraw native text",
+    );
+    assert.ok(!JSON.stringify(restored).includes("Salut"));
+    assert.equal(
+      manager.generate({ message }).changeType,
+      0,
+      "Unchanged originals should not be forced to rebind",
+    );
   } finally {
     await stop();
   }
@@ -487,5 +507,48 @@ test("official compiled bundle loads without Rain and starts/stops using real Va
     assert.ok(env.patches.every((p) => !p.active));
   } finally {
     env.dispose();
+  }
+});
+
+test("bulk continue button starts enabled for the seed message and keeps dimming off its animated view", async () => {
+  const { env, port, stop } = await started();
+  try {
+    const props = {
+      request: {
+        channelId: "c",
+        nonce: 1,
+        seedMessage: { id: "m", channel_id: "c", content: "Hello" },
+      },
+      onClose: () => {},
+      onTranslate: () => {},
+    };
+    const screen = env.render(port.implementation.BulkMessageSelector, props);
+    const button = find(
+      screen,
+      (node: any) =>
+        typeof node.props?.onPress === "function" &&
+        JSON.stringify(node.props.children).includes("Continue to translation"),
+    );
+    assert.equal(button.props.disabled, false);
+    assert.equal(button.props.accessibilityState.disabled, false);
+    assert.equal(button.props.style.opacity, 1);
+    assert.equal(
+      button.props.children.props.style.opacity,
+      undefined,
+      "Animated transforms must not retain an old disabled opacity",
+    );
+    assert.ok(JSON.stringify(button).includes("Continue to translation · 1"));
+    env.overrides.BulkMessageSelector = { 0: [] };
+    const empty = env.render(port.implementation.BulkMessageSelector, props);
+    const disabled = find(
+      empty,
+      (node: any) =>
+        typeof node.props?.onPress === "function" &&
+        JSON.stringify(node.props.children).includes("Continue to translation"),
+    );
+    assert.equal(disabled.props.disabled, true);
+    assert.equal(disabled.props.style.opacity, 0.45);
+  } finally {
+    await stop();
   }
 });

@@ -33,7 +33,7 @@ const ChannelStore = store("ChannelStore"),
 /* ------------------------------------------------------------------ */
 /* constants + settings store                                          */
 /* ------------------------------------------------------------------ */
-const BUILD = "v2.0.0-beta4";
+const BUILD = "v2.0.0-beta5";
 const ACCENT = "#8EA1FF";
 const MAX_TRANSLATIONS = 300;
 const MAX_CACHE = 200;
@@ -171,6 +171,7 @@ const qt = new Proxy(Object.create(null), {
 const updateQuickTranslateSettings = (patch) =>
   useQuickTranslate.getState().updateSettings(patch);
 const translations = new Map();
+const pendingRowUpdates = new Set();
 const cache = new Map();
 const inFlight = new Map();
 const providerCooldownUntil = new Map();
@@ -1022,7 +1023,9 @@ function CustomAction(p) {
     RN.Pressable,
     {
       onPress: p.onPress,
-      disabled: p.disabled,
+      disabled: !!p.disabled,
+      accessibilityState: { disabled: !!p.disabled },
+      style: { opacity: p.disabled ? 0.45 : 1 },
       onPressIn: () => to(0.97),
       onPressOut: () => to(1),
       accessibilityRole: "button",
@@ -1038,7 +1041,6 @@ function CustomAction(p) {
           paddingHorizontal: p.compact ? 12 : 18,
           marginTop: p.top != null ? p.top : 10,
           backgroundColor: bg,
-          opacity: p.disabled ? 0.45 : 1,
           transform: [{ scale: sc }],
         },
       },
@@ -1968,6 +1970,9 @@ function refreshRow(channelId, id) {
   const msg = getMessage(channelId, id);
   if (!msg) return;
   const guildId = safe(() => getChannel(channelId).guild_id, undefined);
+  pendingRowUpdates.add(String(id));
+  while (pendingRowUpdates.size > MAX_TRANSLATIONS)
+    pendingRowUpdates.delete(pendingRowUpdates.values().next().value);
   try {
     FluxDispatcher.dispatch({
       type: "MESSAGE_UPDATE",
@@ -1976,7 +1981,6 @@ function refreshRow(channelId, id) {
         id: String(id),
         channel_id: String(channelId),
         guild_id: guildId,
-        content: msg.content,
       },
     });
   } catch (error) {
@@ -2134,7 +2138,9 @@ function openBulkSelection(message) {
 function BulkMessageSelector(props) {
   const h = React.createElement;
   const C = palette();
-  const [selected, setSelected] = React.useState([]);
+  const [selected, setSelected] = React.useState(() =>
+    props.request.seedMessage?.id ? [String(props.request.seedMessage.id)] : [],
+  );
   const [busy, setBusy] = React.useState(false);
   const [query, setQuery] = React.useState("");
   const seed = props.request.seedMessage;
@@ -2609,8 +2615,7 @@ function parseLanguageSubtext(label) {
 function decorate(row, input) {
   const m = row && row.message;
   if (!m) return;
-  const rowType =
-    input && input.rowType !== undefined ? input.rowType : row.rowType;
+  const rowType = row.type ?? input?.rowType ?? row.rowType;
   if (rowType !== 1) return;
   const tr = translations.get(String(m.id));
   const ours = m.__trOut && m.content === m.__trOut;
@@ -2700,6 +2705,12 @@ function patchRender() {
         const output = { ...row, message: { ...row.message } };
         try {
           decorate(output, args[0]);
+          if ((row.type ?? args[0]?.rowType ?? row.rowType) === 1) {
+            const id = String(row.message.id);
+            const changed = pendingRowUpdates.delete(id);
+            // Native Discord skips unchanged records unless the row is explicitly rebound.
+            if (changed || translations.has(id)) output.changeType = 2;
+          }
           return output;
         } catch (error) {
           onRenderError();
@@ -4111,18 +4122,12 @@ function ColorPicker() {
       "Choose a color preset. Your choice saves automatically.",
     ),
     h(
-      RN.Text,
-      { style: { color: colors.sub, fontSize: 13, marginBottom: 16 } },
-      "Current color: " + current,
-    ),
-    h(
       CustomSection,
       { title: "Color presets" },
       ...COLOR_PRESETS.map(([label, hex], index) =>
         h(CustomRow, {
           key: hex,
           title: label,
-          subtitle: hex,
           last: index === COLOR_PRESETS.length - 1,
           trailing: h(
             RN.View,
@@ -4892,11 +4897,11 @@ function Settings() {
         onPress: () => go("My messages are written in", SourceOutPage),
       }),
       h(CustomRow, {
-        title: "Translate messages to",
+        title: "Quick translate messages to",
         subtitle: languageLabel(settings.targetIn),
-        icon: "文",
+        icon: "lang",
         trailing: h(RN.Text, { style: { color: C.sub, fontSize: 21 } }, "›"),
-        onPress: () => go("Translate messages to", TargetInPage),
+        onPress: () => go("Quick translate messages to", TargetInPage),
       }),
       h(CustomRow, {
         title: "Quick languages",
@@ -4933,7 +4938,6 @@ function Settings() {
       ),
       h(CustomRow, {
         title: "Translation color",
-        subtitle: translationColor(),
         trailing: h(
           RN.View,
           { style: { flexDirection: "row", alignItems: "center" } },
@@ -5363,7 +5367,7 @@ const originalPlugin = {
   description:
     "Translate incoming and outgoing messages with Google Translate or DeepL.",
   id: "quicktranslate",
-  version: "2.0.0-beta4",
+  version: "2.0.0-beta5",
   start() {
     renderErrors = 0;
     pendingRequestCount = 0;

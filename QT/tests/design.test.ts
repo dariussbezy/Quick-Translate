@@ -33,8 +33,74 @@ test("original UI has the same settings sections and composer controls in the sh
 
 import { environment } from "./support/harness.ts";
 import { createHash } from "node:crypto";
+const canonical = (value: any): any =>
+  Array.isArray(value)
+    ? value.map(canonical)
+    : value && typeof value === "object"
+      ? Object.fromEntries(
+          Object.entries(value)
+            .sort(([a], [b]) => a.localeCompare(b))
+            .map(([key, item]) => [key, canonical(item)]),
+        )
+      : value;
 const digest = (value: any) =>
-  createHash("sha256").update(JSON.stringify(value)).digest("hex");
+  createHash("sha256")
+    .update(JSON.stringify(canonical(value)))
+    .digest("hex");
+
+// These are the explicitly requested beta5 changes; all other layout/style
+// properties are still compared with the unmodified uploaded reference.
+function approvedBaseline(value: any): any {
+  if (Array.isArray(value))
+    return value
+      .filter(
+        (node) =>
+          !(
+            node?.type === "Text" &&
+            typeof node.props?.children === "string" &&
+            node.props.children.startsWith("Current color: ")
+          ),
+      )
+      .map(approvedBaseline);
+  if (!value || typeof value !== "object")
+    return value === "Translate messages to"
+      ? "Quick translate messages to"
+      : value;
+  if (
+    value.type === "Text" &&
+    typeof value.props?.children === "string" &&
+    /^#[0-9a-f]{6}$/i.test(value.props.children)
+  )
+    return null;
+  const result = Object.fromEntries(
+    Object.entries(value).map(([key, item]) => [key, approvedBaseline(item)]),
+  );
+  if (
+    result.type === "Pressable" &&
+    result.props?.children?.type === "Animated.View" &&
+    result.props.children.props?.style?.opacity !== undefined
+  ) {
+    const disabled = !!result.props.disabled;
+    result.props = {
+      ...result.props,
+      disabled,
+      accessibilityState: { disabled },
+      style: { opacity: disabled ? 0.45 : 1 },
+    };
+    delete result.props.children.props.style.opacity;
+  }
+  return result;
+}
+function difference(a: any, b: any, path = "root"): string {
+  if (Object.is(a, b)) return "";
+  if (!a || !b || typeof a !== typeof b || typeof a !== "object")
+    return path + ": " + JSON.stringify(a) + " != " + JSON.stringify(b);
+  for (const key of new Set([...Object.keys(a), ...Object.keys(b)])) {
+    const diff = difference(a[key], b[key], path + "." + key);
+    if (diff) return diff;
+  }
+  return "";
+}
 for (const theme of ["dark", "light"]) {
   test(`settings and every original subpage retain their rendered layout (${theme})`, async () => {
     const current = environment(),
@@ -94,6 +160,10 @@ for (const theme of ["dark", "light"]) {
           },
         ],
       ] as [string, any][]) {
+        if (name === "BulkMessageSelector" && props.request.seedMessage?.id)
+          baselineEnv.overrides.BulkMessageSelector = {
+            0: [String(props.request.seedMessage.id)],
+          };
         const actual = current.normalize(
           current.render(port.implementation[name], props),
         );
@@ -102,8 +172,8 @@ for (const theme of ["dark", "light"]) {
         );
         assert.equal(
           digest(actual),
-          digest(expected),
-          `Original layout changed: ${name}`,
+          digest(approvedBaseline(expected)),
+          `Original layout changed: ${name}: ${difference(actual, approvedBaseline(expected))}`,
         );
       }
     } finally {
@@ -138,10 +208,12 @@ for (const theme of ["dark", "light"]) {
             ),
           ),
           digest(
-            baselineEnv.normalize(
-              baselineEnv.render(baseline.TranslateButton, {
-                position: "actions",
-              }),
+            approvedBaseline(
+              baselineEnv.normalize(
+                baselineEnv.render(baseline.TranslateButton, {
+                  position: "actions",
+                }),
+              ),
             ),
           ),
         );
