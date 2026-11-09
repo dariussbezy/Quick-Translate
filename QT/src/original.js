@@ -2660,6 +2660,13 @@ function parseLanguageSubtext(label) {
   ];
 }
 function decorate(row, input) {
+  // Voice transcripts and their translations share the block below the audio.
+  if (
+    globalThis.__valencedVoiceTranscriptBridge?.handlesInline?.(
+      String(row?.message?.id),
+    )
+  )
+    return;
   const m = row && row.message;
   if (!m) return;
   const rowType = row.type ?? input?.rowType ?? row.rowType;
@@ -2787,10 +2794,15 @@ function messageContentText(value) {
 }
 function messagePlan(message) {
   if (!message || !message.id) return null;
-  const text = messageContentText(message.__trBase || message.content);
+  const transcript =
+    globalThis.__valencedVoiceTranscriptBridge?.getTranscript?.(
+      String(message.id),
+    );
+  const text =
+    transcript || messageContentText(message.__trBase || message.content);
   if (!text.trim()) return null;
   const actionMessage =
-    typeof message.content === "string"
+    !transcript && typeof message.content === "string"
       ? message
       : { ...message, content: text };
   const plan = [];
@@ -2880,9 +2892,47 @@ function openBulkTranslationPanel(messages, target) {
   return true;
 }
 function installTextBridge() {
+  const root = globalThis;
+  const api = {
+    isActive: () => pluginStarted,
+    getMessageActions: (message) => {
+      if (!pluginStarted) return [];
+      const plan = messagePlan(message);
+      return plan
+        ? plan.filter((item) => item.key !== "qt-select-messages")
+        : [];
+    },
+    getMessageTranslation: (messageId) => {
+      const result = translations.get(String(messageId));
+      if (!result || !result.text) return null;
+      const sourceCode = String(result.src || "").toLowerCase();
+      const source =
+        sourceCode === "zh-cn"
+          ? "zh-CN"
+          : sourceCode === "zh-tw"
+            ? "zh-TW"
+            : sourceCode.split("-")[0];
+      const target = String(result.tl || "").toLowerCase();
+      const sourceLabel =
+        qt.showSourceLanguage && source && source !== "auto"
+          ? langName(source) + " → " + langName(target)
+          : "";
+      return {
+        text: result.text,
+        color: translationColor(),
+        immersive: result.autoIncoming
+          ? qt.autoIncomingImmersive
+          : (result.immersive ?? qt.immersive),
+        sourceLabel,
+      };
+    },
+  };
   pluginStarted = true;
+  root["__valencedQuickTranslateTextBridge"] = api;
   unpatches.push(() => {
     pluginStarted = false;
+    if (root["__valencedQuickTranslateTextBridge"] === api)
+      delete root["__valencedQuickTranslateTextBridge"];
   });
 }
 function hideLanguageSheet() {
