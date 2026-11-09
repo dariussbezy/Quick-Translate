@@ -9,8 +9,8 @@
       "author": "dariuss",
       "icon": "LanguageIcon",
       "channels": {
-        "beta": "2.0.0-beta3",
-        "latest": "2.0.0-beta3"
+        "beta": "2.0.0-beta4",
+        "latest": "2.0.0-beta4"
       },
       "versions": {
         "2.0.0-beta1": {
@@ -43,6 +43,19 @@
           "url": "https://raw.githubusercontent.com/dariussbezy/Quick-Translate/refs/heads/main/QT/Quick-Translate-Valenced-2.0.0-beta3.zip",
           "sha256": "50151083fb88604c9943d677c894fbed6abc59c7c7d05e2220c8ced43b743a8f",
           "size": 9839,
+          "dependencies": {
+            "valenced.api": {
+              "version": ">=1 <2"
+            },
+            "discord": {
+              "version": ">=352.6 <352.7"
+            }
+          }
+        },
+        "2.0.0-beta4": {
+          "url": "https://raw.githubusercontent.com/dariussbezy/Quick-Translate/refs/heads/main/QT/Quick-Translate-Valenced-2.0.0-beta4.zip",
+          "sha256": "c3acfc0daa29ef2e25d420c145e2c578f14480561967bfd33d851abbd3834ed8",
+          "size": 27943,
           "dependencies": {
             "valenced.api": {
               "version": ">=1 <2"

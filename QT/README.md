@@ -1,81 +1,70 @@
-# Quick Translate for Valenced — 2.0.0-beta3
+# Quick Translate for Valenced — 2.0.0-beta4
 
-A fresh TypeScript implementation based on the behavior of the old Rain plugin. The old source is not included. The interface, language names, and documentation are in English.
+Beta4 restores the uploaded Quick Translate 1.0.8 design and behavior. It adapts that source for Valenced instead of using the simplified interface from beta1–beta3. All labels remain in English.
 
-Target: **Valenced 1.3.0 and Discord 352.6 Alpha**. The manifest accepts Valenced API `>=1 <2` and Discord `>=352.6 <352.7`. These constraints declare the intended target; they do not replace device testing.
+Source, compiled files, and repository updates are published under `QT` on `main`.
 
-## Fixed in beta3
+## Install or update
 
-The Valenced app version (1.3.0) is different from its Plugin API version (1.0.0). The old `>=1.3 <2` API requirement prevented installation. Beta3 declares `>=1 <2`, matching the API version defined by Valenced in `gradle/libs.versions.toml`. The build and generated index now use `main`.
-
-If you added the previous branch-based repository, remove that entry and add the main-branch URL below. This does not uninstall an installed plugin.
-
-## Install using a repository URL
-
-1. Open **Settings → Valenced → Plugins → repository settings**.
-2. Paste this full URL into **Repository URL**, then tap **Add repository**:
+Repository URL:
 
 ```text
 https://raw.githubusercontent.com/dariussbezy/Quick-Translate/refs/heads/main/QT/index.json
 ```
 
-3. Return to **Plugins**, tap **+**, find **Quick Translate**, and install it.
-4. Enable the plugin and reload Discord.
-5. Open Quick Translate settings to select your languages.
+In Valenced repository settings, add this URL. Open **Plugins → +** to install Quick Translate, then enable it and reload Discord. If it is already installed from this repository, use **Check for updates**, install **2.0.0-beta4**, and reload.
 
-Use the full `index.json` URL above. A GitHub repository page URL is not a Valenced plugin index.
+The plugin ID is still `dariuss.quick-translate`. You do not need to uninstall or clear your settings. Preferences and compatible history from previous Valenced betas are retained. If you previously added the branch-based URL, replace that repository entry with the main URL above.
 
-Future published builds can be installed through Valenced's repository updates. If you installed beta1 from a ZIP, add this repository and use the plugin's **Updates → Repository** option to select Quick Translate as its source.
+[Direct beta4 ZIP](https://github.com/dariussbezy/Quick-Translate/raw/refs/heads/main/QT/Quick-Translate-Valenced-2.0.0-beta4.zip) is also available for **Install from file**.
 
-This repository currently points its `latest` channel to a **beta** build for testing. The index, plugin artifacts, source, and future updates live under `QT` on `main`.
+Target: **Valenced app 1.3.0, Plugin API 1.0.0, Discord 352.6 Alpha**. App and API version numbers are different; the manifest correctly declares Plugin API `>=1 <2`.
 
-## Install from a ZIP instead
+## Original design restored
 
-Download the [beta3 plugin ZIP](https://github.com/dariussbezy/Quick-Translate/raw/refs/heads/main/QT/Quick-Translate-Valenced-2.0.0-beta3.zip), then use **Install from file** in Valenced repository settings. Do not extract it or use GitHub's whole-repository “Download ZIP” as a plugin. ZIP-only installations have no automatic update source until you select a repository.
+The original custom design kit is retained, including:
 
-Plugin ID: `dariuss.quick-translate`. Rain/Kettu settings are not imported automatically.
+- Hero card, colored icon tiles, grouped settings cards, row spacing, switches, inputs, color picker, and quick guide.
+- Light and dark palettes and original animations.
+- The compact composer icon and its highlighted draft mode, with both button positions.
+- The animated translation panel, backdrop, swipe-to-dismiss handle, language pages, favorite-language chips, and confirmation controls.
+- The bulk-selection modal, history cards, and channel/DM selection screens.
 
-## Features
+## Original behaviors restored
 
-- Google Translate and DeepL, including personal DeepL Free API keys.
-- Separate incoming and outgoing languages and automatic source-language detection.
-- Translation panel with editable text, copying, draft replacement, and original-draft restoration with conversation/edit checks.
-- A Translate composer button and a Translate action in the message long-press menu, subject to Discord's private module compatibility.
-- Local message display below the original or in its place, without editing the message store's content in the renderer.
-- Per-conversation languages and up to six favorite languages.
-- Optional outgoing auto-translation. A translation error rejects sending instead of silently sending the original text.
-- Optional incoming auto-translation for new messages from other users in explicitly enabled, currently visible conversations.
-- Batch selection for up to 25 messages already loaded in the current conversation, without fetching chat history.
-- Local history (100 entries), saved message translations (300), and an in-memory result cache (200).
-- Protection for code, links, mentions, Discord emoji syntax, and selected terms. A response that damages a protected marker is rejected.
-- Serialized requests, deduplication, a bounded queue, timeouts, HTTP 429 cooldowns, and cancellation when stopped or cleared.
+- Google Translate and DeepL, including Free API keys and the original Google fallback for non-rate-limit DeepL failures.
+- Tap the composer icon to arm/disarm translation; hold it for the original language panel.
+- With **Translate before sending** enabled, the send area becomes Translate. Translate the draft first, then send. Original-draft restoration is available from the panel.
+- Translate once, restore the usual language afterward, set a permanent language for a chat, keep translation armed, or translate the next message only.
+- Source and target languages per chat, quick languages, and protected words.
+- Original message menu actions: translate, show original, translate to another language, bulk translate, and copy translation.
+- Immersive/replacement display, selected translation color, custom emoji rendering, and optional source-language labels.
+- Automatic incoming translation for explicitly selected channels and DMs, including selected background conversations.
+- Bulk selection with search, select/deselect all, and loading older messages in pages of 25.
+- Searchable history with copy, delete, jump to message, and comparison using the other provider.
+- Persistent history, result cache, saved message translations, and their clearing controls.
 
-## Differences from the old Rain plugin
+## Valenced adaptation and fixes
 
-This beta does not yet provide complete feature parity:
+`src/original.js` contains the adapted original behavior and UI. `src/valenced.tsx` isolates module discovery, patcher signatures, event subscriptions, settings routes, clipboard, toasts, and request cancellation. `src/settings-store.ts` binds the original reactive settings contract to Valenced JSON storage.
 
-- Draft translation uses **Use in draft** in the panel; it does not replace Send with a two-tap control.
-- The composer button has one position. Gift and other Discord buttons are left alone.
-- Incoming auto-translation only runs in the visible conversation.
-- Batch translation uses loaded messages without server-side history pagination.
-- History supports copying/deleting; jumping to the original message is not implemented.
-- There is no automatic DeepL-to-Google fallback. Choose the provider explicitly.
-- The cache stays in memory. History and message translations can persist according to the settings.
-- Chat translations use plain text nodes. Protected syntax is preserved as text, but rendering it as mentions, emoji, or Markdown within the translated section is not implemented. Panel colors work; chat colors depend on the renderer's support for node styling.
+The adaptation also prevents shared message/React-tree mutation, preserves the method receiver and send arguments, avoids overwriting a draft after its conversation changes, stops pending requests when disabled, and keeps HTTP 429 cooldown errors from triggering a second provider. Settings writes are serialized and coalesced.
 
-## Verification and limitations
+The obsolete Rain global bridge and simplified beta1–beta3 implementation are not included in the installed beta4 code. Historical ZIPs remain available as previous releases. The original source fixture under `tests/fixtures/` is for regression tests only and is not bundled into the plugin.
 
-Verified: strict TypeScript, compilation with the official Valenced compiler source, ZIP structure, repository index generation, artifact hashes, and automated engine/lifecycle tests in a simulated runtime.
+## Verification and limits
 
-Not device-tested: private Discord module discovery, composer placement, long-press menu structure, draft updates, and native message-row regeneration. Simulated tests cannot prove these integrations work on the target Discord build. No on-device FPS, startup, or memory benchmarks have been measured.
+Automated checks compare the adapted rendered layouts with the uploaded original in light and dark themes, including settings subpages, the bulk selector, and each page of the composer modal. Callback identities and the version footer are normalized for comparison. This verifies component structure and style values; it is not an on-device screenshot or animation test.
 
-The plugin has no Kotlin, Java, Objective-C, or Android-specific paths. It is designed for the shared JavaScript/React Native runtime. iOS compatibility still requires testing.
+Functional checks cover draft translation, message actions, sender arguments, original message preservation, provider fallback, rate limiting, cancellation, per-chat preferences, bulk history loading, history actions, background auto-translation, lifecycle cleanup, and the official compiled bundle's Valenced API paths. The repository index and ZIP checksums are also checked.
 
-Google uses an unofficial endpoint and may rate-limit or reject requests. DeepL has account-specific quotas and possible costs. Automated verification does not send live translation requests. Providers receive the text surrounding protected markers. The DeepL key and translation history are stored locally without plugin-specific encryption.
+Discord's private module names and native rendering still require confirmation on the target device. iOS has not been tested. No on-device performance benchmark has been run.
 
-## Build from source
+Google uses an unofficial endpoint and may rate-limit or reject requests. DeepL has account-specific quotas and possible costs. Automated tests do not send text to live translation providers. API keys and history are stored locally without plugin-specific encryption. The original DeepL-to-Google fallback behavior is retained.
 
-Use Node 24, or at least Node 22.18. From the `QT` folder:
+## Build
+
+Use Node 24 (minimum 22.18). From `QT`:
 
 ```sh
 npm ci --legacy-peer-deps
@@ -83,14 +72,8 @@ npm run check
 npm test
 ```
 
-`npm test` rebuilds the plugin before running the tests. The build creates:
+Tests rebuild the plugin first. The build produces `index.js`, the versioned plugin ZIP, `build/quick-translate.zip`, and `index.json` with artifact sizes and SHA-256 hashes. Publish these together. Previous versioned ZIPs must remain available for the generated index.
 
-- `build/quick-translate.zip` and `Quick-Translate-Valenced-<version>.zip`;
-- `index.js`, the compiled script;
-- `index.json`, the repository index, including ZIP sizes and SHA-256 hashes.
+The official Valenced compiler and index generator are vendored from commit `9ea9f9bfc91319e2b18c6b1c9ac0b993f8600c1d` under the included GPL license. Valenced types are pinned to `c67dd726d1ec28b38d8ac93862fdd3b6029b1d29`.
 
-Keep previous versioned ZIPs available when publishing. Commit the rebuilt script, new ZIP, manifest, and generated index together. Builds use the official `generateIndex` function, rather than maintaining a handwritten repository schema.
-
-The vendored official compiler and index generator are from Valenced plugin CLI commit `9ea9f9bfc91319e2b18c6b1c9ac0b993f8600c1d`, under the included GPL license. Valenced types are pinned to commit `c67dd726d1ec28b38d8ac93862fdd3b6029b1d29`.
-
-References: [Valenced plugin documentation](https://valenced.app/docs/plugin-development/) and [community plugins](https://github.com/Valenced/valenced-community-plugins).
+References: [Valenced documentation](https://valenced.app/docs/plugin-development/) and [community plugins](https://github.com/Valenced/valenced-community-plugins).
