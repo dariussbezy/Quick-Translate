@@ -2,7 +2,7 @@
   "format": 1,
   "id": "dariuss.quick-translate",
   "name": "Quick Translate",
-  "description": "Translate messages and drafts with Google or DeepL. Rewritten for Valenced.",
+  "description": "Translate messages and drafts with Google or DeepL.",
   "author": "dariuss",
   "icon": "LanguageIcon",
   "version": "1.0.0-beta",

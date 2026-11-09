@@ -59,16 +59,7 @@ const archives = (await readdir("."))
   .sort();
 const index = generateIndex(
   archives.map((file) => ({ file, url: `${base}/${file}` })),
-  {
-    ...config,
-    channels: {
-      ...config.channels,
-      [manifest.id]: {
-        ...config.channels?.[manifest.id],
-        latest: manifest.version,
-      },
-    },
-  },
+  config,
 );
 await writeFile("index.json", JSON.stringify(index, null, 2) + "\n");
 console.log(
