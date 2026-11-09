@@ -25,6 +25,8 @@ export function environment() {
     slot = 0;
   const overrides: Record<string, Record<number, any>> = {};
   const stateChanges: any[] = [];
+  const effects: { owner: string; fn: Function }[] = [];
+  const effectCleanups: Function[] = [];
   const h = (type: any, props: any, ...children: any[]) => ({
     $$typeof: Symbol.for("react.transitional.element"),
     type,
@@ -65,7 +67,9 @@ export function environment() {
       ];
     },
     useRef: (initial: any) => ({ current: initial }),
-    useEffect: () => {},
+    useEffect: (fn: Function) => {
+      effects.push({ owner: activeName, fn });
+    },
     useLayoutEffect: () => {},
     useMemo: (fn: any) => fn(),
     useCallback: (fn: any) => fn,
@@ -111,9 +115,23 @@ export function environment() {
         flatten: (s: any) => (Array.isArray(s) ? Object.assign({}, ...s) : s),
       },
       Dimensions: { get: () => ({ height: 800, width: 400 }) },
-      PanResponder: { create: () => ({ panHandlers: {} }) },
+      PanResponder: {
+        create: (config: any) => ({
+          panHandlers: {
+            onStartShouldSetResponder: config.onStartShouldSetPanResponder,
+            onMoveShouldSetResponder: config.onMoveShouldSetPanResponder,
+            onMoveShouldSetResponderCapture:
+              config.onMoveShouldSetPanResponderCapture,
+            onResponderMove: config.onPanResponderMove,
+            onResponderRelease: config.onPanResponderRelease,
+            onResponderTerminate: config.onPanResponderTerminate,
+            onResponderTerminationRequest:
+              config.onPanResponderTerminationRequest,
+          },
+        }),
+      },
       Easing: { out: () => {}, in: () => {}, cubic: () => {} },
-      processColor: (c: string) => c,
+      processColor: (c: string) => 0xff000000 | parseInt(c.slice(1), 16),
     },
     { get: (t: any, k: any) => (k in t ? t[k] : String(k)) },
   );
@@ -401,6 +419,12 @@ export function environment() {
     exportsMap,
     overrides,
     stateChanges,
+    runEffects(owner: string) {
+      for (const effect of effects.splice(0).filter((e) => e.owner === owner)) {
+        const cleanup = effect.fn();
+        if (typeof cleanup === "function") effectCleanups.push(cleanup);
+      }
+    },
     render,
     normalize,
     transport: (fn: any) => {
@@ -410,6 +434,7 @@ export function environment() {
       channelId = id;
     },
     dispose: () => {
+      for (const cleanup of effectCleanups.splice(0).reverse()) cleanup();
       for (const id of trackedTimers) clearTimeout(id);
       trackedTimers.clear();
     },

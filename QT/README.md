@@ -1,8 +1,23 @@
-# Quick Translate for Valenced — 2.0.0-beta5
+# Quick Translate for Valenced — 2.0.0-beta6
 
 Beta4 restores the uploaded Quick Translate 1.0.8 design and behavior. It adapts that source for Valenced instead of using the simplified interface from beta1–beta3. All labels remain in English.
 
 Source, compiled files, and repository updates are published under `QT` on `main`.
+
+## Added and fixed in beta6
+
+- Reduced the original-to-translation gap from two newline nodes to one.
+- Color spans now carry the native username-link context and the exact processed color selected in the palette. Existing messages are regenerated when the color changes.
+- The translation panel attaches drag handlers to the current responder; dragging the handle down dismisses it. The close button uses centered vector strokes instead of a font glyph.
+- With a saved DeepL key, completion notifications name the provider actually used. A DeepL failure followed by Google fallback is labeled **Translated with Google Translate (DeepL fallback)**. Without a key, the completion message is simply **Translated**. Background translations stay silent; manual and bulk completion notices follow the preference.
+- Bulk selection fetches 30 messages directly from Discord's page response, instead of relying on the smaller UI cache. Reaching the bottom requests the next 30. Only messages with translatable text are listed.
+- New **Auto-detect overrides → Word language rules** settings allow adding, editing, and removing up to 100 word/phrase-to-source-language rules.
+
+### Word language rules
+
+For example, add **Salut** and select **Romanian**. In Auto-detect mode, that whole word is translated using Romanian even inside a sentence. The rest of the sentence still uses Auto-detect. Matches ignore case, longer phrases take precedence, and links/code/mentions are protected. An explicitly selected source language overrides these rules. Words marked **Keep words unchanged** remain unchanged.
+
+Matched words can require additional provider requests on first use. Results are cached in memory. Word lookups are not added as separate history entries. When DeepL falls back, the message is retried consistently with Google rather than mixing providers invisibly.
 
 ## Fixed in beta5
 
@@ -19,11 +34,11 @@ Repository URL:
 https://raw.githubusercontent.com/dariussbezy/Quick-Translate/refs/heads/main/QT/index.json
 ```
 
-In Valenced repository settings, add this URL. Open **Plugins → +** to install Quick Translate, then enable it and reload Discord. If it is already installed from this repository, use **Check for updates**, install **2.0.0-beta5**, and reload.
+In Valenced repository settings, add this URL. Open **Plugins → +** to install Quick Translate, then enable it and reload Discord. If it is already installed from this repository, use **Check for updates**, install **2.0.0-beta6**, and reload.
 
 The plugin ID is still `dariuss.quick-translate`. You do not need to uninstall or clear your settings. Preferences and compatible history from previous Valenced betas are retained. If you previously added the branch-based URL, replace that repository entry with the main URL above.
 
-[Direct beta5 ZIP](https://github.com/dariussbezy/Quick-Translate/raw/refs/heads/main/QT/Quick-Translate-Valenced-2.0.0-beta5.zip) is also available for **Install from file**.
+[Direct beta6 ZIP](https://github.com/dariussbezy/Quick-Translate/raw/refs/heads/main/QT/Quick-Translate-Valenced-2.0.0-beta6.zip) is also available for **Install from file**.
 
 Target: **Valenced app 1.3.0, Plugin API 1.0.0, Discord 352.6 Alpha**. App and API version numbers are different; the manifest correctly declares Plugin API `>=1 <2`.
 
@@ -47,7 +62,7 @@ The original custom design kit is retained, including:
 - Original message menu actions: translate, show original, translate to another language, bulk translate, and copy translation.
 - Immersive/replacement display, selected translation color, custom emoji rendering, and optional source-language labels.
 - Automatic incoming translation for explicitly selected channels and DMs, including selected background conversations.
-- Bulk selection with search, select/deselect all, and loading older messages in pages of 25.
+- Bulk selection with search, select/deselect all, and loading older messages in pages of 30.
 - Searchable history with copy, delete, jump to message, and comparison using the other provider.
 - Persistent history, result cache, saved message translations, and their clearing controls.
 
@@ -61,7 +76,7 @@ The obsolete Rain global bridge and simplified beta1–beta3 implementation are 
 
 ## Verification and limits
 
-Automated checks compare the adapted rendered layouts with the uploaded original in light and dark themes, including settings subpages, the bulk selector, and each page of the composer modal. Callback identities, the version footer, and the explicitly requested beta5 UI changes are normalized for comparison. This verifies component structure and style values; it is not an on-device screenshot or animation test.
+Automated checks compare the adapted rendered layouts with the uploaded original in light and dark themes, including settings subpages, the bulk selector, and each page of the composer modal. Callback identities, the version footer, and the explicitly requested beta5/beta6 UI changes are normalized for comparison. This verifies component structure and style values; it is not an on-device screenshot or animation test.
 
 Functional checks cover draft translation, message actions, sender arguments, original message preservation, provider fallback, rate limiting, cancellation, per-chat preferences, bulk history loading, history actions, background auto-translation, lifecycle cleanup, and the official compiled bundle's Valenced API paths. The repository index and ZIP checksums are also checked.
 

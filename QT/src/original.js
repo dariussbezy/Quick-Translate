@@ -24,7 +24,9 @@ import {
   cancelRequests,
   reportIntegrationError,
   waitForTurn,
+  readHistoryPage,
 } from "./valenced";
+import { prepareWordRules } from "./word-rules";
 const ChannelStore = store("ChannelStore"),
   MessageStore = store("MessageStore"),
   PrivateChannelSortStore = store("PrivateChannelSortStore"),
@@ -33,7 +35,7 @@ const ChannelStore = store("ChannelStore"),
 /* ------------------------------------------------------------------ */
 /* constants + settings store                                          */
 /* ------------------------------------------------------------------ */
-const BUILD = "v2.0.0-beta5";
+const BUILD = "v2.0.0-beta6";
 const ACCENT = "#8EA1FF";
 const MAX_TRANSLATIONS = 300;
 const MAX_CACHE = 200;
@@ -158,6 +160,7 @@ const { useStore: useQuickTranslate } = createPluginStore("quicktranslate", {
   autoChannelIds: [],
   autoIncomingImmersive: true,
   protectedWords: [],
+  wordLanguageRules: [],
   historyEntries: [],
   cacheEntries: [],
   keepMessageTranslations: true,
@@ -173,6 +176,7 @@ const updateQuickTranslateSettings = (patch) =>
 const translations = new Map();
 const pendingRowUpdates = new Set();
 const cache = new Map();
+const wordCache = new Map();
 const inFlight = new Map();
 const providerCooldownUntil = new Map();
 let pendingRequestCount = 0;
@@ -304,6 +308,7 @@ function clearTranslationData() {
   );
   cacheGeneration++;
   cache.clear();
+  wordCache.clear();
   inFlight.clear();
   historyEntries = [];
   cancelRequests();
@@ -335,6 +340,7 @@ function hydrateLocalData() {
           .slice(0, MAX_HISTORY)
       : [];
     cache.clear();
+    wordCache.clear();
     if (
       generationAtStart === cacheGeneration &&
       Array.isArray(state.cacheEntries)
@@ -1490,6 +1496,18 @@ function callApi(provider, text, tl, sl) {
 function providerLabel(provider) {
   return provider === "deepl" ? "DeepL" : "Google Translate";
 }
+function translationComplete(result) {
+  if (!String(qt.deeplApiKey || "").trim()) {
+    toast("Translated");
+    return;
+  }
+  const fallback = qt.provider === "deepl" && result.provider === "google";
+  toast(
+    "Translated with " +
+      providerLabel(result.provider) +
+      (fallback ? " (DeepL fallback)" : ""),
+  );
+}
 function prettyToken(t) {
   if (/^<a?:[\w~]+:\d+>$/.test(t)) return t;
   let m;
@@ -1552,6 +1570,12 @@ function translate(
   automatic = false,
 ) {
   const source = sl || "auto";
+  const rules =
+    source === "auto"
+      ? (Array.isArray(qt.wordLanguageRules) ? qt.wordLanguageRules : [])
+          .filter((rule) => rule?.word?.trim() && LANG_NAME.has(rule.language))
+          .slice(0, 100)
+      : [];
   const protectedWordsKey = (
     Array.isArray(qt.protectedWords) ? qt.protectedWords : []
   )
@@ -1559,17 +1583,15 @@ function translate(
     .filter(Boolean)
     .sort()
     .join(",");
-  const cacheKey =
-    (qt.provider || "google") +
-    "|" +
-    (pretty ? "p|" : "r|") +
-    source +
-    "|" +
-    tl +
-    "|w:" +
-    protectedWordsKey +
-    "|" +
-    text;
+  const cacheKey = JSON.stringify([
+    qt.provider || "google",
+    pretty,
+    source,
+    tl,
+    protectedWordsKey,
+    rules.map((rule) => [rule.word, rule.language]),
+    text,
+  ]);
   const generation = cacheGeneration;
   if (cache.has(cacheKey)) {
     const cached = cache.get(cacheKey);
@@ -1586,99 +1608,118 @@ function translate(
   if (!out.replace(/§\d+§/g, "").trim())
     return Promise.resolve({ same: true, text, src: source });
   const selectedProvider = qt.provider || "google";
-  const requestProvider = (provider) => {
+  const requestPart = (provider, fragment, fragmentSource) => {
     const cooldownUntil = providerCooldownUntil.get(provider) || 0;
-    if (cooldownUntil > Date.now())
-      return Promise.reject(
-        Object.assign(
-          new Error(
-            provider +
-              " is paused after HTTP 429; retry in " +
-              Math.ceil((cooldownUntil - Date.now()) / 1000) +
-              "s",
-          ),
-          { status: 429 },
+    const paused = (until) =>
+      Object.assign(
+        new Error(
+          provider +
+            " is paused after HTTP 429; retry in " +
+            Math.ceil((until - Date.now()) / 1000) +
+            "s",
         ),
+        { status: 429 },
       );
+    if (cooldownUntil > Date.now())
+      return Promise.reject(paused(cooldownUntil));
     return enqueueRequest(async () => {
       const queuedCooldown = providerCooldownUntil.get(provider) || 0;
-      if (queuedCooldown > Date.now())
-        throw Object.assign(
-          new Error(
-            provider +
-              " is paused after HTTP 429; retry in " +
-              Math.ceil((queuedCooldown - Date.now()) / 1000) +
-              "s",
-          ),
-          { status: 429 },
-        );
+      if (queuedCooldown > Date.now()) throw paused(queuedCooldown);
       try {
-        return await callApi(provider, out, tl, source);
+        return await callApi(provider, fragment, tl, fragmentSource);
       } catch (error) {
-        if (Number(error?.status) === 429) {
-          const pause = Math.max(
-            DEFAULT_429_COOLDOWN,
-            Number(error.retryAfterMs) || 0,
+        if (Number(error?.status) === 429)
+          providerCooldownUntil.set(
+            provider,
+            Date.now() +
+              Math.max(DEFAULT_429_COOLDOWN, Number(error.retryAfterMs) || 0),
           );
-          providerCooldownUntil.set(provider, Date.now() + pause);
-        }
         throw error;
       }
     }, automatic);
   };
+  const runProvider = async (provider) => {
+    const prepared = await prepareWordRules(
+      out,
+      tokens,
+      rules,
+      tl,
+      async (word, language) => {
+        const key = JSON.stringify([provider, word, language, tl]);
+        if (wordCache.has(key)) return wordCache.get(key);
+        const result = await requestPart(provider, word, language);
+        if (!isRunning() || generation !== cacheGeneration)
+          throw new Error("Translation cancelled");
+        wordCache.set(key, result.text);
+        trimMap(wordCache, MAX_CACHE);
+        return result.text;
+      },
+    );
+    const result = prepared.out.replace(/§\s*\d+\s*§/g, "").trim()
+      ? await requestPart(provider, prepared.out, source)
+      : { text: prepared.out, src: prepared.source || source };
+    if (prepared.applied) {
+      for (let index = tokens.length; index < prepared.tokens.length; index++) {
+        const marker = new RegExp("§\\s*" + index + "\\s*§", "g");
+        if ((result.text.match(marker) || []).length !== 1)
+          throw new Error("Translation provider changed a word-rule marker");
+      }
+    }
+    return {
+      ...result,
+      provider,
+      tokens: prepared.tokens,
+      ruleApplied: prepared.applied,
+    };
+  };
   const request = (
     selectedProvider !== "deepl"
-      ? requestProvider("google").then((res) =>
-          Object.assign(res, { provider: "google" }),
-        )
-      : requestProvider("deepl")
-          .then((res) => Object.assign(res, { provider: "deepl" }))
-          .catch((deeplError) => {
-            if (Number(deeplError?.status) === 429) throw deeplError;
-            return requestProvider("google")
-              .then((res) => Object.assign(res, { provider: "google" }))
-              .catch((googleError) => {
-                throw new Error(
-                  "DeepL and Google failed: " +
-                    (googleError?.message ||
-                      deeplError?.message ||
-                      "request failed"),
-                );
-              });
-          })
+      ? runProvider("google")
+      : runProvider("deepl").catch((deeplError) => {
+          if (
+            !isRunning() ||
+            generation !== cacheGeneration ||
+            Number(deeplError?.status) === 429
+          )
+            throw deeplError;
+          return runProvider("google").catch((googleError) => {
+            throw new Error(
+              "DeepL and Google failed: " +
+                (googleError?.message ||
+                  deeplError?.message ||
+                  "request failed"),
+            );
+          });
+        })
   ).then((res) => {
     if (!pluginStarted || generation !== cacheGeneration)
       throw new Error("Translation cancelled");
-    const base = String(tl).toLowerCase().split("-")[0];
-    const detected = String(res.src || "")
-      .toLowerCase()
-      .split("-")[0];
-    const result =
+    const base = String(tl).toLowerCase().split("-")[0],
+      detected = String(res.src || "")
+        .toLowerCase()
+        .split("-")[0];
+    const translated = restore(res.text, res.tokens, pretty);
+    const same =
       source === "auto" &&
-      (!detected || detected === "auto" || detected === base)
-        ? { same: true, text, src: res.src, provider: res.provider }
-        : {
-            same: false,
-            text: restore(res.text, tokens, pretty),
-            src: res.src,
-            provider: res.provider,
-          };
-    if (generation === cacheGeneration) {
-      cache.set(cacheKey, result);
-      trimMap(cache, MAX_CACHE);
-      addHistory(text, result.text, result, tl, channelId, messageId);
-    }
+      ((!res.ruleApplied &&
+        (!detected || detected === "auto" || detected === base)) ||
+        translated === text);
+    const result = {
+      same,
+      text: same ? text : translated,
+      src: res.src,
+      provider: res.provider,
+    };
+    cache.set(cacheKey, result);
+    trimMap(cache, MAX_CACHE);
+    addHistory(text, result.text, result, tl, channelId, messageId);
     return result;
   });
   inFlight.set(cacheKey, request);
-  request.then(
-    () => {
-      if (inFlight.get(cacheKey) === request) inFlight.delete(cacheKey);
-    },
-    () => {
-      if (inFlight.get(cacheKey) === request) inFlight.delete(cacheKey);
-    },
-  );
+  const remove = () => {
+    if (inFlight.get(cacheKey) === request) inFlight.delete(cacheKey);
+  };
+  request.then(remove, remove);
   return request;
 }
 /* ------------------------------------------------------------------ */
@@ -1856,7 +1897,7 @@ function translateCurrentText(tl, sl) {
       if (writeInput(result.text)) {
         lastOriginal = text;
         lastOriginalChannelId = currentChannelId();
-        toast("Translated with " + providerLabel(result.provider));
+        translationComplete(result);
         return true;
       } else
         toast("Could not update the chat box; the original text is unchanged");
@@ -1913,7 +1954,7 @@ function patchSend() {
               ).then((r) => {
                 if (!r.same) {
                   args[1] = Object.assign({}, msg, { content: r.text });
-                  toast("Translated with " + providerLabel(r.provider));
+                  translationComplete(r);
                   if (job.oneShot) oneShotTranslated = true;
                 }
               });
@@ -2037,7 +2078,7 @@ function translateMessage(
         immersiveOverride,
       );
       setTimeout(() => refreshRow(channelId, message.id), silent ? 220 : 0);
-      if (!silent) toast("Translated with " + providerLabel(r.provider));
+      if (!silent) translationComplete(r);
       return true;
     })
     .catch((e) => {
@@ -2091,10 +2132,13 @@ function messageArray(channelId) {
     result;
   return Array.isArray(value) ? value : [];
 }
-const BULK_PAGE_SIZE = 25;
-function bulkMessageCandidates(request) {
+const BULK_PAGE_SIZE = 30;
+function bulkMessageCandidates(request, fetched = null) {
   const seed = request?.seedMessage;
-  const all = [...messageArray(request?.channelId), seed].filter(
+  const all = [
+    seed,
+    ...(Array.isArray(fetched) ? fetched : messageArray(request?.channelId)),
+  ].filter(
     (message) =>
       message?.id &&
       typeof message.content === "string" &&
@@ -2103,22 +2147,18 @@ function bulkMessageCandidates(request) {
   );
   const unique = new Map();
   for (const message of all) unique.set(String(message.id), message);
-  return Array.from(unique.values()).sort((a, b) =>
-    String(b.id).localeCompare(String(a.id)),
+  return Array.from(unique.values()).sort(
+    (a, b) =>
+      String(b.id).length - String(a.id).length ||
+      String(b.id).localeCompare(String(a.id)),
   );
 }
 function fetchBulkMessagePage(channelId, before) {
-  const actions = safe(() => findByProps("fetchMessages"), null);
-  if (typeof actions?.fetchMessages !== "function")
-    return Promise.resolve(null);
-  const options = { channelId: String(channelId), limit: BULK_PAGE_SIZE };
-  if (before) options.before = String(before);
-  return Promise.resolve()
-    .then(() => actions.fetchMessages(options))
-    .then(
-      (result) => ({ ok: true, result }),
-      () => null,
-    );
+  return readHistoryPage(
+    String(channelId),
+    before ? String(before) : null,
+    BULK_PAGE_SIZE,
+  ).catch(() => null);
 }
 function openBulkSelection(message) {
   const channelId = String(
@@ -2157,72 +2197,75 @@ function BulkMessageSelector(props) {
   const [hasMore, setHasMore] = React.useState(true);
   const loadLock = React.useRef(false);
   const cursor = React.useRef(initialPage[initialPage.length - 1]?.id || null);
+  const activeLoad = React.useRef(0);
+  const [loadError, setLoadError] = React.useState("");
   React.useEffect(() => {
-    let active = true;
+    const generation = ++activeLoad.current;
     setSelected(seedId ? [seedId] : []);
     setQuery("");
     setBusy(false);
-    setLoadingMore(false);
-    loadLock.current = false;
-    const loaded = bulkMessageCandidates(props.request);
-    const firstPage = loaded
-      .filter((m) => String(m.id) !== seedId)
-      .slice(0, visiblePageSize);
-    setMessages(seed ? [seed, ...firstPage] : firstPage);
-    cursor.current = firstPage[firstPage.length - 1]?.id || null;
-    setHasMore(true);
-    if (firstPage.length >= visiblePageSize)
-      return () => {
-        active = false;
-      };
-    fetchBulkMessagePage(props.request.channelId, null).then((result) => {
-      if (!active) return;
-      const refreshed = bulkMessageCandidates(props.request);
-      const page = refreshed
+    setLoadingMore(true);
+    setLoadError("");
+    loadLock.current = true;
+    fetchBulkMessagePage(props.request.channelId, null).then((page) => {
+      if (activeLoad.current !== generation) return;
+      const all = bulkMessageCandidates(props.request, page?.messages ?? null);
+      const latest = all
         .filter((m) => String(m.id) !== seedId)
         .slice(0, visiblePageSize);
-      setMessages(seed ? [seed, ...page] : page);
-      cursor.current = page[page.length - 1]?.id || null;
-      setHasMore(!!result && page.length >= visiblePageSize);
-      if (!result)
-        toast(
-          "Could not load the latest 25 messages; showing messages already loaded",
-        );
+      const selectedSeed = all.find((m) => String(m.id) === seedId) || seed;
+      setMessages(selectedSeed ? [selectedSeed, ...latest] : latest);
+      cursor.current = latest[latest.length - 1]?.id || seedId || null;
+      setHasMore(
+        page
+          ? page.hasMore || all.length > latest.length + (selectedSeed ? 1 : 0)
+          : true,
+      );
+      if (!page) setLoadError("Could not load messages. Scroll down to retry.");
+      setLoadingMore(false);
+      loadLock.current = false;
     });
     return () => {
-      active = false;
+      activeLoad.current++;
     };
   }, [props.request.nonce]);
   const loadMore = async () => {
     if (loadLock.current || !hasMore) return;
+    const generation = activeLoad.current;
     loadLock.current = true;
     setLoadingMore(true);
+    setLoadError("");
     const currentCursor = cursor.current;
-    const currentIds = new Set(messages.map((m) => String(m.id)));
-    const fetchResult = await fetchBulkMessagePage(
+    const page = await fetchBulkMessagePage(
       props.request.channelId,
       currentCursor,
     );
-    const all = bulkMessageCandidates(props.request);
+    if (activeLoad.current !== generation) return;
+    if (!page) {
+      setLoadError("Could not load older messages. Scroll down to retry.");
+      setLoadingMore(false);
+      loadLock.current = false;
+      return;
+    }
+    const currentIds = new Set(messages.map((m) => String(m.id)));
+    const all = bulkMessageCandidates(props.request, page.messages);
     const older = all
       .filter(
         (m) =>
           currentCursor &&
-          String(m.id) < String(currentCursor) &&
+          String(m.id).length <= String(currentCursor).length &&
+          (String(m.id).length < String(currentCursor).length ||
+            String(m.id) < String(currentCursor)) &&
           !currentIds.has(String(m.id)),
       )
       .slice(0, BULK_PAGE_SIZE);
-    if (older.length) {
-      setMessages((current) => {
-        const ids = new Set(current.map((m) => String(m.id)));
-        return current.concat(older.filter((m) => !ids.has(String(m.id))));
-      });
-      cursor.current = older[older.length - 1].id;
-      setHasMore(older.length >= BULK_PAGE_SIZE || !!fetchResult);
-    } else {
-      setHasMore(false);
-      if (!fetchResult) toast("Could not load older messages");
-    }
+    setMessages((current) => {
+      const ids = new Set(current.map((m) => String(m.id)));
+      return current.concat(older.filter((m) => !ids.has(String(m.id))));
+    });
+    cursor.current =
+      page.before || older[older.length - 1]?.id || currentCursor;
+    setHasMore(page.hasMore || older.length >= BULK_PAGE_SIZE);
     setLoadingMore(false);
     loadLock.current = false;
   };
@@ -2423,7 +2466,7 @@ function BulkMessageSelector(props) {
                   h(
                     RN.Text,
                     { style: { color: C.sub, fontSize: 12, marginTop: 8 } },
-                    "Loading 25 older messages…",
+                    "Loading 30 messages…",
                   ),
                 )
               : hasMore
@@ -2437,7 +2480,7 @@ function BulkMessageSelector(props) {
                         padding: 16,
                       },
                     },
-                    "Scroll down to load 25 older messages",
+                    loadError || "Scroll down to load 30 older messages",
                   )
                 : h(
                     RN.Text,
@@ -2500,7 +2543,8 @@ function paint(nodes, color) {
       type: "link",
       target: "usernameOnClick",
       context: {
-        username: "",
+        username: 1,
+        medium: true,
         usernameOnClick: {
           action: "0",
           userId: "0",
@@ -2669,11 +2713,7 @@ function decorate(row, input) {
     : (tr.immersive ?? qt.immersive);
   const lineBreak = () => ({ type: "text", content: "\n", __tr: true });
   if (immersive)
-    out = base.concat(
-      [lineBreak(), lineBreak()],
-      sourceHint,
-      paint(text, color),
-    );
+    out = base.concat([lineBreak()], sourceHint, paint(text, color));
   else out = sourceHint.concat(paint(text, color));
   if (!out.length) return;
   m.__trBaseRaw = originalContent;
@@ -2913,6 +2953,7 @@ function TranslateButton(props) {
   const closingPanel = React.useRef(false);
   const buttonScale = React.useRef(new RN.Animated.Value(1)).current;
   const sheetPanResponder = React.useRef(null);
+  const closePanelRef = React.useRef(null);
   const [, tick] = React.useState(0);
   React.useEffect(() => {
     const f = () => {
@@ -3131,6 +3172,7 @@ function TranslateButton(props) {
       closingPanel.current = false;
     });
   };
+  closePanelRef.current = closePanel;
   const sheetTravel = Math.max(
     600,
     safe(() => RN.Dimensions.get("window").height, 800),
@@ -3153,7 +3195,7 @@ function TranslateButton(props) {
       },
       onPanResponderRelease: (_, gesture) => {
         if (gesture.dy > Math.max(72, sheetTravel * 0.1) || gesture.vy > 0.5) {
-          closePanel();
+          closePanelRef.current?.();
           return;
         }
         RN.Animated.parallel([
@@ -3234,9 +3276,9 @@ function TranslateButton(props) {
           }
           setBusy(false);
           const services = [];
-          if (serviceCounts.google)
+          if (String(qt.deeplApiKey || "").trim() && serviceCounts.google)
             services.push(serviceCounts.google + " Google Translate");
-          if (serviceCounts.deepl)
+          if (String(qt.deeplApiKey || "").trim() && serviceCounts.deepl)
             services.push(serviceCounts.deepl + " DeepL");
           toast(
             translatedCount +
@@ -3700,7 +3742,7 @@ function TranslateButton(props) {
               h(
                 RN.View,
                 {
-                  ...sheetPanResponder.panHandlers,
+                  ...sheetPanResponder.current.panHandlers,
                   accessibilityLabel: "Drag down to close translate menu",
                   accessibilityHint: "Swipe down to dismiss",
                   style: {
@@ -3739,7 +3781,7 @@ function TranslateButton(props) {
                     hitSlop: 10,
                     style: {
                       position: "absolute",
-                      top: 0,
+                      top: 3,
                       right: 0,
                       width: 38,
                       height: 38,
@@ -3749,17 +3791,21 @@ function TranslateButton(props) {
                       justifyContent: "center",
                     },
                   },
-                  h(
-                    RN.Text,
-                    {
+                  ...["45deg", "-45deg"].map((rotate) =>
+                    h(RN.View, {
+                      key: rotate,
+                      pointerEvents: "none",
                       style: {
-                        color: paletteNow.text,
-                        fontSize: 24,
-                        lineHeight: 28,
-                        fontWeight: "500",
+                        position: "absolute",
+                        left: 12,
+                        top: 18,
+                        width: 14,
+                        height: 2,
+                        borderRadius: 1,
+                        backgroundColor: paletteNow.text,
+                        transform: [{ rotate }],
                       },
-                    },
-                    String.fromCharCode(215),
+                    }),
                   ),
                 ),
               ),
@@ -3953,6 +3999,143 @@ function ComposerSendSlot(props) {
     props.children,
   );
 }
+function WordLanguageRulesPage() {
+  const h = React.createElement,
+    settings = useQuickTranslate(),
+    navigation = NavigationNative.useNavigation(),
+    C = palette();
+  const [word, setWord] = React.useState("");
+  const [language, setLanguage] = React.useState("ro");
+  const [editing, setEditing] = React.useState(null);
+  const rules = Array.isArray(settings.wordLanguageRules)
+    ? settings.wordLanguageRules
+    : [];
+  const save = () => {
+    const value = word.trim();
+    if (!value || !LANG_NAME.has(language)) return;
+    const key = value.toLocaleLowerCase();
+    const next = rules.filter(
+      (rule) =>
+        rule.word.toLocaleLowerCase() !== key &&
+        rule.word.toLocaleLowerCase() !== editing,
+    );
+    if (next.length >= 100) {
+      toast("You can save up to 100 word language rules");
+      return;
+    }
+    updateQuickTranslateSettings({
+      wordLanguageRules: [...next, { word: value, language }],
+    });
+    setWord("");
+    setEditing(null);
+  };
+  return h(
+    RN.ScrollView,
+    {
+      style: { flex: 1 },
+      keyboardShouldPersistTaps: "handled",
+      contentContainerStyle: { padding: 16, paddingBottom: 42 },
+    },
+    h(KitHero, {
+      icon: "lang",
+      title: "Word language rules",
+      subtitle: "Help Auto-detect understand specific words",
+      stats: [["Rules", rules.length]],
+    }),
+    h(
+      CustomSection,
+      { title: editing ? "Edit rule" : "Add rule" },
+      h(
+        RN.View,
+        { style: { padding: 14 } },
+        h(
+          RN.Text,
+          {
+            style: {
+              color: C.sub,
+              fontSize: 13,
+              lineHeight: 18,
+              marginBottom: 12,
+            },
+          },
+          "Choose a source language for a word or phrase. Only matching words are overridden, even inside a sentence. Explicit source languages and protected words take priority.",
+        ),
+        h(CustomInput, {
+          value: word,
+          placeholder: "Word or phrase, e.g. Salut",
+          maxLength: 80,
+          autoCorrect: false,
+          autoCapitalize: "none",
+          onChangeText: setWord,
+        }),
+      ),
+      h(CustomRow, {
+        title: "Source language",
+        subtitle: languageLabel(language),
+        icon: "lang",
+        last: true,
+        trailing: h(RN.Text, { style: { color: C.sub, fontSize: 21 } }, "›"),
+        onPress: () =>
+          navigation.push("DariussQuickTranslatePage", {
+            title: "Word language",
+            render: () =>
+              h(LangPicker, { value: language, onSelect: setLanguage }),
+          }),
+      }),
+      h(CustomAction, {
+        title: editing ? "Save rule" : "Add rule",
+        disabled: !word.trim(),
+        onPress: save,
+      }),
+    ),
+    h(
+      CustomSection,
+      {
+        title: "Saved rules",
+        footer:
+          "Case-insensitive, whole-word matching. Rules apply only in Auto-detect mode.",
+      },
+      ...rules.map((rule, index) =>
+        h(CustomRow, {
+          key: rule.word.toLocaleLowerCase(),
+          title: rule.word,
+          subtitle: languageLabel(rule.language),
+          icon: "lang",
+          last: index === rules.length - 1,
+          onPress: () => {
+            setWord(rule.word);
+            setLanguage(rule.language);
+            setEditing(rule.word.toLocaleLowerCase());
+          },
+          trailing: h(CustomAction, {
+            title: "Remove",
+            compact: true,
+            danger: true,
+            secondary: true,
+            top: 0,
+            onPress: () => {
+              updateQuickTranslateSettings({
+                wordLanguageRules: rules.filter((_, i) => i !== index),
+              });
+              if (editing === rule.word.toLocaleLowerCase()) {
+                setEditing(null);
+                setWord("");
+              }
+            },
+          }),
+        }),
+      ),
+      rules.length
+        ? null
+        : h(
+            RN.Text,
+            { style: { color: C.sub, padding: 16, fontSize: 14 } },
+            "No rules yet. For example, add Salut and choose Romanian.",
+          ),
+    ),
+  );
+}
+
 function LangPicker(props) {
   const h = React.createElement;
   const settings = useQuickTranslate();
@@ -3966,7 +4149,8 @@ function LangPicker(props) {
       !q || name.toLowerCase().includes(q) || code.toLowerCase().includes(q),
   );
   const choose = (code) => {
-    updateQuickTranslateSettings({ [props.field]: code });
+    if (typeof props.onSelect === "function") props.onSelect(code);
+    else updateQuickTranslateSettings({ [props.field]: code });
     navigation.goBack();
   };
   return h(
@@ -3993,7 +4177,7 @@ function LangPicker(props) {
           subtitle: code,
           last: index === list.length - 1,
           trailing:
-            settings[props.field] === code
+            (props.value ?? settings[props.field]) === code
               ? h(
                   RN.Text,
                   {
@@ -4881,6 +5065,20 @@ function Settings() {
     ),
     h(
       CustomSection,
+      { title: "Auto-detect overrides" },
+      h(CustomRow, {
+        title: "Word language rules",
+        subtitle:
+          (settings.wordLanguageRules || []).length +
+          " rules · Auto-detect only",
+        icon: "lang",
+        last: true,
+        trailing: h(RN.Text, { style: { color: C.sub, fontSize: 21 } }, "›"),
+        onPress: () => go("Word language rules", WordLanguageRulesPage),
+      }),
+    ),
+    h(
+      CustomSection,
       { title: "Languages" },
       h(CustomRow, {
         title: "Translate my messages to",
@@ -5367,7 +5565,7 @@ const originalPlugin = {
   description:
     "Translate incoming and outgoing messages with Google Translate or DeepL.",
   id: "quicktranslate",
-  version: "2.0.0-beta5",
+  version: "2.0.0-beta6",
   start() {
     renderErrors = 0;
     pendingRequestCount = 0;
@@ -5417,6 +5615,7 @@ const originalPlugin = {
     translations.clear();
     cacheGeneration++;
     cache.clear();
+    wordCache.clear();
     inFlight.clear();
     autoSeen.clear();
     bulkSelectionRequest = null;
@@ -5442,6 +5641,7 @@ export {
   LangPicker,
   FavPicker,
   ColorPicker,
+  WordLanguageRulesPage,
   HistoryPage,
   AutoChannelsPage,
   TranslateButton,

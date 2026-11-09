@@ -211,3 +211,71 @@ test("previous Valenced beta preferences and history migrate into the original s
     env.dispose();
   }
 });
+test("Auto-detect rules translate a word with its chosen source without forcing the whole sentence", async () => {
+  const { env, port, finish } = await engine({
+    wordLanguageRules: [{ word: "Salut", language: "ro" }],
+  });
+  try {
+    const calls: any[] = [];
+    env.transport(async (url: string) => {
+      const u = new URL(url);
+      calls.push([u.searchParams.get("q"), u.searchParams.get("sl")]);
+      return response(
+        calls.length === 1 ? "Hello" : u.searchParams.get("q")!,
+        "en",
+      );
+    });
+    const result = await port.implementation.translate(
+      "Salut, my friend!",
+      "en",
+      "auto",
+      false,
+    );
+    assert.equal(result.text, "Hello, my friend!");
+    assert.equal(result.same, false);
+    assert.deepEqual(calls[0], ["Salut", "ro"]);
+    assert.equal(calls[1][1], "auto");
+  } finally {
+    finish();
+  }
+});
+test("explicit source languages bypass word rules", async () => {
+  const { env, port, finish } = await engine({
+    wordLanguageRules: [{ word: "Salut", language: "ro" }],
+  });
+  try {
+    const calls: any[] = [];
+    env.transport(async (url: string) => {
+      const u = new URL(url);
+      calls.push(u.searchParams.get("sl"));
+      return response("Health", "ca");
+    });
+    const result = await port.implementation.translate(
+      "Salut",
+      "en",
+      "ca",
+      false,
+    );
+    assert.equal(result.text, "Health");
+    assert.deepEqual(calls, ["ca"]);
+  } finally {
+    finish();
+  }
+});
+test("a provider cannot silently drop a forced word from the translated sentence", async () => {
+  const { env, port, finish } = await engine({
+    wordLanguageRules: [{ word: "Salut", language: "ro" }],
+  });
+  try {
+    let requests = 0;
+    env.transport(async () =>
+      response(++requests === 1 ? "Hello" : "The word marker was lost", "en"),
+    );
+    await assert.rejects(
+      port.implementation.translate("Salut, friend", "en", "auto", false),
+      /word-rule marker/,
+    );
+  } finally {
+    finish();
+  }
+});

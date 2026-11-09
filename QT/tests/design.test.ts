@@ -27,7 +27,10 @@ test("original UI has the same settings sections and composer controls in the sh
     "Scroll down to load 25 older messages",
   ]) {
     assert.ok(source.includes(label), "Baseline contains " + label);
-    assert.ok(bundle.includes(label), "Missing original control: " + label);
+    assert.ok(
+      bundle.includes(label.replace("25 older", "30 older")),
+      "Missing original control: " + label,
+    );
   }
 });
 
@@ -48,7 +51,7 @@ const digest = (value: any) =>
     .update(JSON.stringify(canonical(value)))
     .digest("hex");
 
-// These are the explicitly requested beta5 changes; all other layout/style
+// These are the explicitly requested beta5/beta6 changes; all other layout/style
 // properties are still compared with the unmodified uploaded reference.
 function approvedBaseline(value: any): any {
   if (Array.isArray(value))
@@ -65,7 +68,11 @@ function approvedBaseline(value: any): any {
   if (!value || typeof value !== "object")
     return value === "Translate messages to"
       ? "Quick translate messages to"
-      : value;
+      : value === "Scroll down to load 25 older messages"
+        ? "Scroll down to load 30 older messages"
+        : value === "Loading 25 older messages…"
+          ? "Loading 30 messages…"
+          : value;
   if (
     value.type === "Text" &&
     typeof value.props?.children === "string" &&
@@ -89,7 +96,61 @@ function approvedBaseline(value: any): any {
     };
     delete result.props.children.props.style.opacity;
   }
+  if (
+    result.props?.accessibilityLabel === "Drag down to close translate menu"
+  ) {
+    for (const key of [
+      "onStartShouldSetResponder",
+      "onMoveShouldSetResponder",
+      "onMoveShouldSetResponderCapture",
+      "onResponderMove",
+      "onResponderRelease",
+      "onResponderTerminate",
+      "onResponderTerminationRequest",
+    ])
+      result.props[key] = "[callback]";
+  }
+  if (result.props?.accessibilityLabel === "Close translate menu") {
+    result.props.style.top = 3;
+    const old = result.props.children;
+    result.props.children = ["45deg", "-45deg"].map((rotate) => ({
+      $$typeof: old.$$typeof,
+      type: "View",
+      props: {
+        pointerEvents: "none",
+        style: {
+          position: "absolute",
+          left: 12,
+          top: 18,
+          width: 14,
+          height: 2,
+          borderRadius: 1,
+          backgroundColor: old.props.style.color,
+          transform: [{ rotate }],
+        },
+      },
+    }));
+  }
   return result;
+}
+function approvedCurrent(value: any): any {
+  if (Array.isArray(value))
+    return value
+      .filter(
+        (node) =>
+          !(
+            node?.type === "View" &&
+            node.props?.style?.marginBottom === 24 &&
+            JSON.stringify(node.props.children?.[0]).includes(
+              "Auto-detect overrides",
+            )
+          ),
+      )
+      .map(approvedCurrent);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value).map(([key, item]) => [key, approvedCurrent(item)]),
+  );
 }
 function difference(a: any, b: any, path = "root"): string {
   if (Object.is(a, b)) return "";
@@ -171,7 +232,7 @@ for (const theme of ["dark", "light"]) {
           baselineEnv.render(baseline[name], props),
         );
         assert.equal(
-          digest(actual),
+          digest(approvedCurrent(actual)),
           digest(approvedBaseline(expected)),
           `Original layout changed: ${name}: ${difference(actual, approvedBaseline(expected))}`,
         );

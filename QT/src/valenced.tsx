@@ -246,9 +246,12 @@ export const FluxDispatcher = {
     return dispatcher.dispatch(payload);
   },
 };
+let toastSequence = 0;
 export function showToast(text: string) {
   if (!running) return;
-  ToastActionCreators.open("dariuss.quick-translate", { text });
+  ToastActionCreators.open(`dariuss.quick-translate.${++toastSequence}`, {
+    text,
+  });
 }
 export function findInReactTree(
   tree: any,
@@ -485,4 +488,67 @@ export function waitForTurn(ms: number) {
     }, ms);
     waits.add(cancel);
   });
+}
+
+/** Read the requested page, rather than depending on Discord's small UI cache. */
+export async function readHistoryPage(
+  channelId: string,
+  before: string | null,
+  limit = 30,
+) {
+  if (!running) throw new Error("Quick Translate is stopped");
+  const requestEpoch = epoch;
+  const client = findByProps("HTTP")?.HTTP;
+  let raw: any[];
+  if (typeof client?.get === "function") {
+    const endpoints = findByProps("Endpoints")?.Endpoints;
+    const url =
+      typeof endpoints?.MESSAGES === "function"
+        ? endpoints.MESSAGES(channelId)
+        : `/channels/${encodeURIComponent(channelId)}/messages`;
+    const response = await client.get({
+      url,
+      query: { limit, ...(before ? { before } : {}) },
+      oldFormErrors: true,
+    });
+    if (!Array.isArray(response?.body))
+      throw new Error("Discord returned an invalid message page");
+    raw = response.body;
+  } else {
+    const actions = findByProps("fetchMessages");
+    if (typeof actions?.fetchMessages !== "function")
+      throw new Error("Discord history API is unavailable");
+    const result = await actions.fetchMessages({
+      channelId,
+      limit,
+      ...(before ? { before } : {}),
+    });
+    const collection = findByStoreName("MessageStore")?.getMessages(channelId);
+    const body = result?.body ?? result?.messages ?? result;
+    raw = Array.isArray(body)
+      ? body
+      : (collection?.toArray?.() ?? collection?._array ?? []);
+    if (before)
+      raw = raw.filter(
+        (message) => compareSnowflakes(String(message.id), before) < 0,
+      );
+  }
+  if (!running || epoch !== requestEpoch)
+    throw new Error("History loading cancelled");
+  const records = raw
+    .filter((message) => message?.id)
+    .map((message) => ({
+      ...message,
+      channel_id: message.channel_id ?? channelId,
+    }))
+    .sort((a, b) => compareSnowflakes(String(b.id), String(a.id)))
+    .slice(0, limit);
+  return {
+    messages: records,
+    hasMore: raw.length >= limit,
+    before: records.at(-1)?.id ? String(records.at(-1).id) : before,
+  };
+}
+function compareSnowflakes(a: string, b: string) {
+  return a.length - b.length || (a < b ? -1 : a > b ? 1 : 0);
 }

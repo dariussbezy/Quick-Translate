@@ -290,7 +290,13 @@ test("translated message rows retain original typography and do not mutate cache
       "Native rows must be marked changed to bind the translation",
     );
     assert.ok(JSON.stringify(rendered).includes("Hello"));
-    assert.ok(JSON.stringify(rendered).includes("#8EA1FF"));
+    const colored = findAst(rendered, (node: any) => node.type === "link");
+    assert.equal(colored.context.username, 1);
+    assert.equal(colored.context.medium, true);
+    assert.equal(
+      colored.context.usernameOnClick.linkColor,
+      env.RN.processColor("#8EA1FF"),
+    );
     assert.ok(!env.dispatches.some((e) => e.message?.flags !== undefined));
     port.implementation.showOriginal(message);
     const restored = manager.generate({ message });
@@ -339,7 +345,7 @@ test("message menu keeps original action ordering before Copy", async () => {
     await stop();
   }
 });
-test("bulk selector fetches the next 25 messages using the original history cursor", async () => {
+test("bulk selector fetches the next 30 messages using the original history cursor", async () => {
   const { env, port, stop } = await started();
   try {
     const base = 1000000000000000000n;
@@ -379,7 +385,7 @@ test("bulk selector fetches the next 25 messages using the original history curs
     await new Promise((resolve) => setTimeout(resolve, 0));
     assert.equal(calls.length, 1);
     assert.equal(calls[0].channelId, "c");
-    assert.equal(calls[0].limit, 25);
+    assert.equal(calls[0].limit, 30);
     assert.ok(BigInt(calls[0].before) < BigInt(seed.id));
   } finally {
     await stop();
@@ -548,6 +554,352 @@ test("bulk continue button starts enabled for the seed message and keeps dimming
     );
     assert.equal(disabled.props.disabled, true);
     assert.equal(disabled.props.style.opacity, 0.45);
+  } finally {
+    await stop();
+  }
+});
+
+function findAst(value: any, predicate: (value: any) => boolean): any {
+  if (!value || typeof value !== "object") return;
+  if (predicate(value)) return value;
+  for (const child of Array.isArray(value) ? value : Object.values(value)) {
+    const found = findAst(child, predicate);
+    if (found) return found;
+  }
+}
+test("translation color is sent as the selected native ARGB value and changes after selecting a preset", async () => {
+  const { env, port, stop } = await started({ targetIn: "ro" });
+  try {
+    const message = { id: "m", channel_id: "c", content: "Hello" };
+    env.messages.set("c:m", message);
+    class RowManager {
+      generate(_args: any) {
+        return {
+          type: 1,
+          changeType: 0,
+          message: { id: "m", content: [{ type: "text", content: "Hello" }] },
+        };
+      }
+    }
+    env.addModule(RowManager);
+    env.transport(async () => reply("Salut"));
+    port.implementation.messagePlan(message)[0].press();
+    await new Promise((r) => setTimeout(r, 10));
+    const manager = new RowManager();
+    let row = manager.generate({ message });
+    const screen = env.render(port.implementation.ColorPicker);
+    const red = find(
+      screen,
+      (n: any) =>
+        typeof n.props?.onPress === "function" &&
+        JSON.stringify(n.props.children).includes("Red"),
+    );
+    red.props.onPress();
+    row = manager.generate({ message });
+    const link = findAst(row, (n: any) => n.type === "link");
+    assert.equal(link.context.username, 1);
+    assert.equal(link.context.medium, true);
+    assert.equal(
+      link.context.usernameOnClick.linkColor,
+      env.RN.processColor("#ED4245"),
+    );
+    assert.equal(row.changeType, 2);
+    const nodes = row.message.content;
+    assert.equal(
+      nodes.filter((n: any) => n.type === "text" && n.content === "\n").length,
+      1,
+      "Keep a single line break between original and translation",
+    );
+    assert.equal(message.content, "Hello");
+  } finally {
+    await stop();
+  }
+});
+test("drag handle receives working responder events and close icon uses centered shapes", async () => {
+  const { env, port, stop } = await started();
+  try {
+    env.overrides.TranslateButton = { 1: true };
+    const screen = env.render(port.implementation.TranslateButton, {
+      position: "actions",
+    });
+    const handle = find(
+      screen,
+      (n: any) =>
+        n.props?.accessibilityLabel === "Drag down to close translate menu",
+    );
+    assert.equal(typeof handle.props.onResponderMove, "function");
+    assert.equal(
+      handle.props.onMoveShouldSetResponder({}, { dy: 30, dx: 1 }),
+      true,
+    );
+    handle.props.onResponderMove({}, { dy: 120, dx: 0 });
+    handle.props.onResponderRelease({}, { dy: 120, vy: 0.8 });
+    assert.ok(
+      env.stateChanges.some(
+        (change) => change.index === 1 && change.next === false,
+      ),
+    );
+    const close = find(
+      screen,
+      (n: any) => n.props?.accessibilityLabel === "Close translate menu",
+    );
+    assert.ok(Array.isArray(close.props.children));
+    for (const stroke of close.props.children) {
+      assert.equal(stroke.type, "View");
+      const s = stroke.props.style;
+      assert.equal(s.left + s.width / 2, close.props.style.width / 2);
+      assert.equal(s.top + s.height / 2, close.props.style.height / 2);
+    }
+  } finally {
+    await stop();
+  }
+});
+test("bulk page reads thirty API results directly even when the Discord cache has only ten", async () => {
+  const { env, port, stop } = await started();
+  try {
+    const body = Array.from({ length: 30 }, (_, i) => ({
+      id: String(1000000000000000000n + BigInt(100 - i)),
+      channel_id: "c",
+      content: "Text " + i,
+    }));
+    body.slice(0, 10).forEach((m) => env.messages.set("c:" + m.id, m));
+    const calls: any[] = [];
+    env.addModule({
+      HTTP: {
+        get: async (options: any) => {
+          calls.push(options);
+          return { body };
+        },
+      },
+    });
+    const page = await port.integration.readHistoryPage("c", null, 30);
+    assert.equal(page.messages.length, 30);
+    assert.equal(page.hasMore, true);
+    assert.equal(calls[0].query.limit, 30);
+    await port.integration.readHistoryPage("c", page.before, 30);
+    assert.equal(calls[1].query.before, body[29].id);
+  } finally {
+    await stop();
+  }
+});
+test("bulk selector fills the first thirty from the response and appends thirty per scroll", async () => {
+  const { env, port, stop } = await started();
+  try {
+    const all = Array.from({ length: 100 }, (_, i) => ({
+      id: String(1000000000000000000n + BigInt(200 - i)),
+      channel_id: "c",
+      content: "Text " + i,
+    }));
+    all.slice(0, 10).forEach((m) => env.messages.set("c:" + m.id, m));
+    const calls: any[] = [];
+    env.addModule({
+      HTTP: {
+        get: async (options: any) => {
+          calls.push(options);
+          const start = options.query.before
+            ? all.findIndex((m) => m.id === options.query.before) + 1
+            : 0;
+          return { body: all.slice(start, start + options.query.limit) };
+        },
+      },
+    });
+    const screen = env.render(port.implementation.BulkMessageSelector, {
+      request: { channelId: "c", nonce: 1, seedMessage: all[0] },
+      onClose: () => {},
+      onTranslate: () => {},
+    });
+    env.runEffects("BulkMessageSelector");
+    await new Promise((r) => setTimeout(r, 0));
+    let rows = env.stateChanges
+      .filter((c) => c.index === 3 && Array.isArray(c.next))
+      .at(-1)!.next;
+    assert.equal(rows.length, 30);
+    assert.equal(calls[0].query.limit, 30);
+    const scroll = find(
+      screen,
+      (n: any) => typeof n.props?.onScroll === "function",
+    );
+    for (const expected of [60, 90]) {
+      const count = env.stateChanges.length;
+      scroll.props.onScroll({
+        nativeEvent: {
+          contentOffset: { y: 1000 },
+          layoutMeasurement: { height: 800 },
+          contentSize: { height: 1200 },
+        },
+      });
+      await new Promise((r) => setTimeout(r, 0));
+      const update = env.stateChanges
+        .slice(count)
+        .find((c) => c.index === 3 && typeof c.next === "function");
+      assert.ok(update);
+      rows = update!.next(rows);
+      assert.equal(rows.length, expected);
+      assert.equal(new Set(rows.map((m: any) => m.id)).size, expected);
+    }
+    assert.equal(calls.length, 3);
+    assert.equal(calls[1].query.before, all[29].id);
+    assert.equal(calls[2].query.before, all[59].id);
+  } finally {
+    await stop();
+  }
+});
+test("provider completion appears after Translating only when a DeepL key is configured", async () => {
+  for (const key of ["", "key:fx"]) {
+    const { env, port, stop } = await started({
+      targetIn: "ro",
+      provider: "deepl",
+      deeplApiKey: key,
+    });
+    try {
+      env.transport(async (url: string) =>
+        url.includes("deepl.com")
+          ? {
+              ok: false,
+              status: 503,
+              json: async () => ({ message: "Unavailable" }),
+              headers: { get: () => null },
+            }
+          : reply("Salut"),
+      );
+      port.implementation
+        .messagePlan({ id: "m", channel_id: "c", content: "Hello" })[0]
+        .press();
+      for (
+        let i = 0;
+        i < 180 &&
+        !env.toasts.some(
+          (t) => t === "Translated" || t.startsWith("Translated with"),
+        );
+        i++
+      )
+        await new Promise((r) => setTimeout(r, 10));
+      assert.equal(env.toasts[0], "Translating...");
+      if (key)
+        assert.ok(
+          env.toasts.includes(
+            "Translated with Google Translate (DeepL fallback)",
+          ),
+        );
+      else {
+        assert.ok(env.toasts.includes("Translated"));
+        assert.ok(!env.toasts.some((t) => t.startsWith("Translated with")));
+      }
+    } finally {
+      await stop();
+    }
+  }
+});
+test("word rule editor adds and removes a source rule using the existing settings design", async () => {
+  const { env, port, stop } = await started();
+  try {
+    env.overrides.WordLanguageRulesPage = { 0: "Salut", 1: "ro" };
+    let screen = env.render(port.implementation.WordLanguageRulesPage);
+    const add = find(
+      screen,
+      (n: any) =>
+        typeof n.props?.onPress === "function" &&
+        JSON.stringify(n.props.children).includes("Add rule"),
+    );
+    add.props.onPress();
+    assert.deepEqual(
+      JSON.parse(
+        JSON.stringify(
+          port.implementation.useQuickTranslate.getState().wordLanguageRules,
+        ),
+      ),
+      [{ word: "Salut", language: "ro" }],
+    );
+    let selected = "";
+    screen = env.render(port.implementation.LangPicker, {
+      value: "ro",
+      onSelect: (language: string) => {
+        selected = language;
+      },
+    });
+    find(
+      screen,
+      (n: any) =>
+        typeof n.props?.onPress === "function" &&
+        JSON.stringify(n.props.children).includes("Romanian"),
+    ).props.onPress();
+    assert.equal(selected, "ro");
+    screen = env.render(port.implementation.WordLanguageRulesPage);
+    find(
+      screen,
+      (n: any) =>
+        typeof n.props?.onPress === "function" &&
+        n.props.children?.type === "Animated.View" &&
+        JSON.stringify(n.props.children).includes("Remove"),
+    ).props.onPress();
+    assert.equal(
+      port.implementation.useQuickTranslate.getState().wordLanguageRules.length,
+      0,
+    );
+  } finally {
+    await stop();
+  }
+});
+test("successful DeepL rules report DeepL and save only the complete message in history", async () => {
+  const { env, port, stop } = await started({
+    targetIn: "en",
+    provider: "deepl",
+    deeplApiKey: "key:fx",
+    wordLanguageRules: [{ word: "Salut", language: "ro" }],
+  });
+  try {
+    const requests: any[] = [],
+      keys: string[] = [];
+    const toast =
+      env.exportsMap["@valenced/discord/actions"].ToastActionCreators;
+    const open = toast.open;
+    toast.open = (key: string, data: any) => {
+      keys.push(key);
+      open(key, data);
+    };
+    env.transport(async (_url: string, options: any) => {
+      const body = JSON.parse(options.body);
+      requests.push(body);
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          translations: [
+            {
+              text: requests.length === 1 ? "Hello" : body.text[0],
+              detected_source_language: requests.length === 1 ? "RO" : "EN",
+            },
+          ],
+        }),
+        headers: { get: () => null },
+      };
+    });
+    port.implementation
+      .messagePlan({
+        id: "m",
+        channel_id: "c",
+        content: "Salut, my friend!",
+      })[0]
+      .press();
+    for (
+      let i = 0;
+      i < 180 && !env.toasts.includes("Translated with DeepL");
+      i++
+    )
+      await new Promise((r) => setTimeout(r, 10));
+    assert.ok(env.toasts.includes("Translated with DeepL"));
+    assert.equal(requests[0].source_lang, "RO");
+    assert.equal(requests[1].source_lang, undefined);
+    const history =
+      port.implementation.useQuickTranslate.getState().historyEntries;
+    assert.equal(history.length, 1);
+    assert.equal(history[0].translated, "Hello, my friend!");
+    assert.equal(history[0].original, "Salut, my friend!");
+    assert.equal(
+      new Set(keys).size,
+      keys.length,
+      "Completion must not reuse the Translating notification key",
+    );
   } finally {
     await stop();
   }
