@@ -27,10 +27,6 @@ https://raw.githubusercontent.com/dariussbezy/Quick-Translate/refs/heads/main/QT
 
 Find **Quick Translate**, install it and enable it. Open the plugin's settings to choose your languages and translation service.
 
-The repository URL stays the same. If you have an earlier **2.0.0 beta** installed, install **1.0.0-beta** manually using the latest ZIP from [`QT`](QT) and **Install from file**, then restart Discord. Valenced does not offer lower version numbers as automatic updates.
-
-When **Next to the Send button** is selected, hold the Translate icon and tap **Turn off Translate** to disable translation. That action stays below the scrolling content in the draft menu. Close the menu with **X** or by tapping outside it.
-
 ## Privacy
 
 Translation sends the text being translated to the selected provider. DeepL requires your own API key; Google Translate does not. If DeepL fails, the plugin can send that text to Google as a fallback. Automatic translation processes incoming text in the channels and DMs you select.
