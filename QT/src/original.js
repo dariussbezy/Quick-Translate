@@ -35,7 +35,7 @@ const ChannelStore = store("ChannelStore"),
 /* ------------------------------------------------------------------ */
 /* constants + settings store                                          */
 /* ------------------------------------------------------------------ */
-const BUILD = "v2.0.0-beta6";
+const BUILD = "v2.0.0-beta7";
 const ACCENT = "#8EA1FF";
 const MAX_TRANSLATIONS = 300;
 const MAX_CACHE = 200;
@@ -608,7 +608,7 @@ const LANGUAGE_FLAGS = {
 };
 const languageLabel = (code, name = langName(code)) =>
   (LANGUAGE_FLAGS[code] ? LANGUAGE_FLAGS[code] + "  " : "") + name;
-/* ---- shared settings design kit (identical in AML / GPL / QT) ---- */
+/* ---- Quick Translate settings components ---- */
 const KIT_TILES = {
   lang: ["LanguageIcon", "\u6587", "#5865F2"],
   paint: ["PaintPaletteIcon", "\u25C9", "#EB459E"],
@@ -637,7 +637,6 @@ const KIT_RULES = [
     /^(default|red|orange|gold|green|teal|blue|indigo|purple|pink|gray)$/i,
     null,
   ],
-  [/^ghost ping logger$/i, "power"],
   [/color|appearance/, "paint"],
   [/notify|alert|toast/, "bell"],
   [/test/, "test"],
@@ -657,7 +656,7 @@ const KIT_RULES = [
   [/word|term/, "text"],
   [/server|guild/, "server"],
   [/capture|message|channel|dm/, "chat"],
-  [/enabled|logger/, "power"],
+  [/enabled/, "power"],
 ];
 const kitAssetCache = new Map();
 function kitAsset(name) {
@@ -2043,7 +2042,6 @@ function translateMessage(
   }
   const channelId =
     message.channel_id || message.channelId || currentChannelId();
-  if (!silent) toast("Translating...");
   return translate(
     text,
     tl,
@@ -2541,17 +2539,10 @@ function paint(nodes, color) {
   return [
     {
       type: "link",
-      target: "usernameOnClick",
-      context: {
-        username: 1,
-        medium: true,
-        usernameOnClick: {
-          action: "0",
-          userId: "0",
-          linkColor: color,
-          messageChannelId: "0",
-        },
-      },
+      // Discord 352.6 reads the color directly from LinkContentNode.
+      // An actionless target styles this span without opening a user profile.
+      target: { linkColor: color, medium: false },
+      linkColor: color,
       content: nodes.filter((n) => n && INLINE.has(n.type)),
     },
   ];
@@ -2952,8 +2943,6 @@ function TranslateButton(props) {
   const backdropProgress = React.useRef(new RN.Animated.Value(0)).current;
   const closingPanel = React.useRef(false);
   const buttonScale = React.useRef(new RN.Animated.Value(1)).current;
-  const sheetPanResponder = React.useRef(null);
-  const closePanelRef = React.useRef(null);
   const [, tick] = React.useState(0);
   React.useEffect(() => {
     const f = () => {
@@ -3172,64 +3161,10 @@ function TranslateButton(props) {
       closingPanel.current = false;
     });
   };
-  closePanelRef.current = closePanel;
   const sheetTravel = Math.max(
     600,
     safe(() => RN.Dimensions.get("window").height, 800),
   );
-  if (!sheetPanResponder.current) {
-    sheetPanResponder.current = RN.PanResponder.create({
-      onStartShouldSetPanResponder: () => false,
-      onMoveShouldSetPanResponder: (_, gesture) =>
-        gesture.dy > 4 && Math.abs(gesture.dy) > Math.abs(gesture.dx) * 1.15,
-      onMoveShouldSetPanResponderCapture: (_, gesture) =>
-        gesture.dy > 4 && Math.abs(gesture.dy) > Math.abs(gesture.dx) * 1.15,
-      onShouldBlockNativeResponder: () => true,
-      onPanResponderMove: (_, gesture) => {
-        const progress = Math.max(
-          0,
-          Math.min(1, 1 - Math.max(0, gesture.dy) / sheetTravel),
-        );
-        sheetProgress.setValue(progress);
-        backdropProgress.setValue(progress);
-      },
-      onPanResponderRelease: (_, gesture) => {
-        if (gesture.dy > Math.max(72, sheetTravel * 0.1) || gesture.vy > 0.5) {
-          closePanelRef.current?.();
-          return;
-        }
-        RN.Animated.parallel([
-          RN.Animated.spring(sheetProgress, {
-            toValue: 1,
-            speed: 20,
-            bounciness: 0,
-            useNativeDriver: true,
-          }),
-          RN.Animated.timing(backdropProgress, {
-            toValue: 1,
-            duration: 140,
-            useNativeDriver: true,
-          }),
-        ]).start();
-      },
-      onPanResponderTerminate: () => {
-        RN.Animated.parallel([
-          RN.Animated.spring(sheetProgress, {
-            toValue: 1,
-            speed: 20,
-            bounciness: 0,
-            useNativeDriver: true,
-          }),
-          RN.Animated.timing(backdropProgress, {
-            toValue: 1,
-            duration: 140,
-            useNativeDriver: true,
-          }),
-        ]).start();
-      },
-      onPanResponderTerminationRequest: () => false,
-    });
-  }
   const favorites = (settings.favLangs || []).filter((code) =>
     LANG_NAME.has(code),
   );
@@ -3543,18 +3478,6 @@ function TranslateButton(props) {
                 },
               })
             : null,
-          !messageRequest && armed
-            ? h(CustomAction, {
-                key: "disable",
-                title: "Turn off Translate",
-                secondary: true,
-                onPress: () => {
-                  armed = null;
-                  notifyButton();
-                  closePanel();
-                },
-              })
-            : null,
         ]
       : [
           h(CustomAction, {
@@ -3641,7 +3564,15 @@ function TranslateButton(props) {
         mr: 0,
         mv: 0,
       }
-    : { w: 32, h: 32, r: 10, bg: paletteNow.blurple, mr: 0, ml: 5, mv: 0 };
+    : {
+        w: 32,
+        h: 32,
+        r: 10,
+        bg: paletteNow.blurple,
+        mr: 0,
+        ml: props.position === "send" ? 0 : 5,
+        mv: 0,
+      };
   return h(
     RN.View,
     {
@@ -3722,7 +3653,7 @@ function TranslateButton(props) {
               RN.Animated.View,
               {
                 style: {
-                  maxHeight: "88%",
+                  maxHeight: "92%",
                   backgroundColor: paletteNow.bg,
                   borderTopLeftRadius: 24,
                   borderTopRightRadius: 24,
@@ -3742,36 +3673,14 @@ function TranslateButton(props) {
               h(
                 RN.View,
                 {
-                  ...sheetPanResponder.current.panHandlers,
-                  accessibilityLabel: "Drag down to close translate menu",
-                  accessibilityHint: "Swipe down to dismiss",
                   style: {
-                    height: 44,
-                    marginBottom: 10,
+                    height: 38,
+                    marginBottom: 8,
                     flexDirection: "row",
                     alignItems: "center",
                     justifyContent: "center",
                   },
                 },
-                h(
-                  RN.View,
-                  {
-                    style: {
-                      width: 72,
-                      height: 44,
-                      alignItems: "center",
-                      justifyContent: "center",
-                    },
-                  },
-                  h(RN.View, {
-                    style: {
-                      width: 38,
-                      height: 5,
-                      borderRadius: 3,
-                      backgroundColor: paletteNow.off,
-                    },
-                  }),
-                ),
                 h(
                   RN.Pressable,
                   {
@@ -3781,7 +3690,7 @@ function TranslateButton(props) {
                     hitSlop: 10,
                     style: {
                       position: "absolute",
-                      top: 3,
+                      top: 0,
                       right: 0,
                       width: 38,
                       height: 38,
@@ -3825,6 +3734,22 @@ function TranslateButton(props) {
                     { keyboardShouldPersistTaps: "handled" },
                     ...panelBody,
                   ),
+              panelPage === "main" && !messageRequest && armed
+                ? h(
+                    RN.View,
+                    { style: { flexShrink: 0, paddingTop: 6 } },
+                    h(CustomAction, {
+                      title: "Turn off Translate",
+                      secondary: true,
+                      top: 0,
+                      onPress: () => {
+                        armed = null;
+                        notifyButton();
+                        closePanel();
+                      },
+                    }),
+                  )
+                : null,
             ),
           ),
         )
@@ -3888,23 +3813,7 @@ function patchChatButton() {
       unpatches.push(
         after("render", component.type, (_, ret) => {
           if (!ret) return ret;
-          return h(
-            RN.View,
-            {
-              pointerEvents: "box-none",
-              collapsable: false,
-              style: {
-                flexDirection: "row",
-                alignItems: "center",
-                overflow: "visible",
-              },
-            },
-            ret,
-            h(TranslateButton, {
-              key: "qt-button-actions",
-              position: "actions",
-            }),
-          );
+          return h(ComposerActionsSlot, { children: ret });
         }),
       );
     }),
@@ -3929,6 +3838,26 @@ function patchChatButton() {
     }),
   );
 }
+function ComposerActionsSlot(props) {
+  const h = React.createElement;
+  const settings = useQuickTranslate();
+  if (settings.anchor === "send" || settings.showButton === false)
+    return props.children;
+  return h(
+    RN.View,
+    {
+      pointerEvents: "box-none",
+      collapsable: false,
+      style: {
+        flexDirection: "row",
+        alignItems: "center",
+        overflow: "visible",
+      },
+    },
+    props.children,
+    h(TranslateButton, { position: "actions" }),
+  );
+}
 function ComposerSendSlot(props) {
   const h = React.createElement;
   const settings = useQuickTranslate();
@@ -3944,7 +3873,9 @@ function ComposerSendSlot(props) {
     active &&
     settings.showButton !== false &&
     settings.draftBeforeSend !== false;
-  const showTranslate = settings.anchor === "send" || replaceSend;
+  const showTranslate =
+    settings.showButton !== false &&
+    (settings.anchor === "send" || replaceSend);
   if (!showTranslate) return props.children;
   if (replaceSend)
     return h(
@@ -3993,6 +3924,8 @@ function ComposerSendSlot(props) {
         flexDirection: "row",
         alignItems: "flex-end",
         alignSelf: "flex-end",
+        flexGrow: 0,
+        flexShrink: 0,
       },
     },
     props.button,
@@ -4005,7 +3938,7 @@ function WordLanguageRulesPage() {
     navigation = NavigationNative.useNavigation(),
     C = palette();
   const [word, setWord] = React.useState("");
-  const [language, setLanguage] = React.useState("ro");
+  const [language, setLanguage] = React.useState("");
   const [editing, setEditing] = React.useState(null);
   const rules = Array.isArray(settings.wordLanguageRules)
     ? settings.wordLanguageRules
@@ -4027,6 +3960,7 @@ function WordLanguageRulesPage() {
       wordLanguageRules: [...next, { word: value, language }],
     });
     setWord("");
+    setLanguage("");
     setEditing(null);
   };
   return h(
@@ -4062,7 +3996,7 @@ function WordLanguageRulesPage() {
         ),
         h(CustomInput, {
           value: word,
-          placeholder: "Word or phrase, e.g. Salut",
+          placeholder: "Word or phrase, e.g. Hello",
           maxLength: 80,
           autoCorrect: false,
           autoCapitalize: "none",
@@ -4071,7 +4005,7 @@ function WordLanguageRulesPage() {
       ),
       h(CustomRow, {
         title: "Source language",
-        subtitle: languageLabel(language),
+        subtitle: language ? languageLabel(language) : "Select a language",
         icon: "lang",
         last: true,
         trailing: h(RN.Text, { style: { color: C.sub, fontSize: 21 } }, "›"),
@@ -4084,7 +4018,7 @@ function WordLanguageRulesPage() {
       }),
       h(CustomAction, {
         title: editing ? "Save rule" : "Add rule",
-        disabled: !word.trim(),
+        disabled: !word.trim() || !LANG_NAME.has(language),
         onPress: save,
       }),
     ),
@@ -4120,6 +4054,7 @@ function WordLanguageRulesPage() {
               if (editing === rule.word.toLocaleLowerCase()) {
                 setEditing(null);
                 setWord("");
+                setLanguage("");
               }
             },
           }),
@@ -4130,7 +4065,7 @@ function WordLanguageRulesPage() {
         : h(
             RN.Text,
             { style: { color: C.sub, padding: 16, fontSize: 14 } },
-            "No rules yet. For example, add Salut and choose Romanian.",
+            "No rules yet. For example, add Hello and choose its source language.",
           ),
     ),
   );
@@ -5260,7 +5195,7 @@ function Settings() {
         title: "Button position",
         subtitle:
           settings.anchor === "send"
-            ? "Next to the Send button"
+            ? "Next to the Send button. To turn off translation, hold the Translate icon and tap Turn off Translate."
             : "Next to the + button",
         trailing: h(RN.Text, { style: { color: C.sub, fontSize: 21 } }, "›"),
         onPress: () => {

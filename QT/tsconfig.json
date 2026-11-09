@@ -9,7 +9,12 @@
     "esModuleInterop": true,
     "noEmit": true,
     "allowImportingTsExtensions": true,
-    "types": ["@valenced/types", "node"]
+    "types": [
+      "@valenced/types",
+      "node"
+    ]
   },
-  "include": ["src", "tests"]
+  "include": [
+    "src"
+  ]
 }
