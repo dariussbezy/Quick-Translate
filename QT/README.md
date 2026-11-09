@@ -1,64 +1,75 @@
-# Quick Translate pentru Valenced — 2.0.0-beta1
+# Quick Translate for Valenced — 2.0.0-beta2
 
-Rescriere nouă în TypeScript. Arhiva Rain a fost citită ca referință de comportament; sursele vechi nu au fost modificate și nu sunt incluse în pachet.
+A fresh TypeScript implementation based on the behavior of the old Rain plugin. The old source is not included. The interface, language names, and documentation are in English.
 
-Ținta acestei beta: **Valenced 1.3.0 și Discord 352.6 Alpha**, conform versiunilor comunicate. Manifestul acceptă API Valenced >=1.3 <2 și Discord >=352.6 <352.7. Restricția declară ținta; nu înlocuiește testarea pe dispozitiv.
+Target: **Valenced 1.3.0 and Discord 352.6 Alpha**. The manifest accepts Valenced API `>=1.3 <2` and Discord `>=352.6 <352.7`. These constraints declare the intended target; they do not replace device testing.
 
-## Instalare
+## Install using a repository URL
 
-1. Deschide Discord cu Valenced.
-2. Settings → Valenced → Plugins → rotița de setări → Install from file.
-3. Selectează `Quick-Translate-Valenced-2.0.0-beta1.zip` (nu arhiva surselor).
-4. Activează pluginul și reîncarcă Discord.
-5. Deschide setările Quick Translate și alege limbile. Butonul „Open translator” permite testarea serviciului chiar dacă un hook al interfeței Discord nu mai corespunde versiunii instalate.
-6. În chat: butonul 文 deschide traducătorul. Apăsarea lungă pe un mesaj adaugă „Translate”, dacă structura meniului este compatibilă.
+1. Open **Settings → Valenced → Plugins → repository settings**.
+2. Paste this full URL into **Repository URL**, then tap **Add repository**:
 
-Nu trebuie dezarhivat ZIP-ul de instalare. Pluginul instalat din fișier nu primește automat actualizări. ID nou: `dariuss.quick-translate`; nu importă automat datele Rain/Kettu.
+```text
+https://raw.githubusercontent.com/dariussbezy/Quick-Translate/refs/heads/codex/quick-translate-valenced-beta/QT/index.json
+```
 
-## Funcții implementate
+3. Return to **Plugins**, tap **+**, find **Quick Translate**, and install it.
+4. Enable the plugin and reload Discord.
+5. Open Quick Translate settings to select your languages.
 
-- Google Translate și DeepL (cheie proprie, inclusiv Free API).
-- Limbi separate pentru mesaje primite și proprii; detectarea automată a limbii sursă.
-- Traducător cu text editabil, rezultat, copiere, înlocuirea ciornei și revenire la original dacă utilizatorul nu a schimbat între timp ciorna/conversația.
-- Meniu Translate pentru mesajele cu text; afișare sub original sau înlocuirea locală a afișării. Conținutul mesajului din store nu este modificat de renderer.
-- Limbi memorate per conversație și maximum șase limbi favorite.
-- Traducere automată opțională la trimitere. La eroare cererea de trimitere eșuează, fără trimiterea automată a originalului.
-- Traducere automată a mesajelor noi de la alți utilizatori în conversația vizibilă, doar pentru conversațiile activate explicit.
-- Selecție pentru traducerea a maximum 25 de mesaje deja încărcate în conversația curentă; fără descărcarea istoricului de pe server.
-- Istoric local (maximum 100), traduceri locale ale mesajelor (maximum 300), cache în memorie (maximum 200).
-- Protejarea codului, linkurilor, mențiunilor, emoji-urilor Discord și a termenilor aleși. Dacă serviciul alterează un marcaj protejat, rezultatul este respins.
-- Cereri serializate, deduplicare, coadă limitată, timeout, pauză după HTTP 429 și anulare la oprire/ștergerea cache-ului.
+Use the full `index.json` URL above. A GitHub repository page URL is not a Valenced plugin index.
 
-## Diferențe față de versiunea Rain
+Future published builds can be installed through Valenced's repository updates. If you installed beta1 from a ZIP, add this repository and use the plugin's **Updates → Repository** option to select Quick Translate as its source.
 
-Aceasta este prima versiune beta, nu o declarație de paritate completă și nici o versiune verificată pe telefon.
+This repository currently points its `latest` channel to a **beta** build for testing. Both the index and plugin artifacts stay under `QT` on the `codex/quick-translate-valenced-beta` branch. The main branch is unchanged.
 
-- Traducerea ciornei se confirmă în panou cu „Use in draft”; nu înlocuiește butonul Send cu un control în doi pași.
-- Butonul are o singură poziție, lângă acțiunile composerului. Nu ascunde Gift și nu modifică alte butoane Discord.
-- Traducerea automată în fundal, în toate conversațiile, este eliminată; lucrează numai în conversația vizibilă.
-- Traducerea în lot folosește mesajele deja încărcate, fără paginarea istoricului de pe server.
-- Istoricul permite copiere/ștergere; saltul la mesaj nu este implementat în această beta.
-- Nu există fallback automat DeepL → Google. Schimbarea serviciului se face explicit în panou; nu trimitem textul către un al doilea furnizor fără alegerea utilizatorului.
-- Cache-ul nu este salvat pe disc. Istoricul și traducerile mesajelor pot fi păstrate, conform opțiunilor.
-- Traducerea afișată în chat este un nod de text simplu. Sintaxa protejată se păstrează în text, dar randarea ei ca mențiuni/emoji/Markdown în secțiunea tradusă nu este încă implementată. Culoarea din panou este implementată; culoarea din chat depinde de suportul rendererului pentru stilul nodului.
+## Install from a ZIP instead
 
-## Verificări și limite
+Download the [beta2 plugin ZIP](https://github.com/dariussbezy/Quick-Translate/raw/refs/heads/codex/quick-translate-valenced-beta/QT/Quick-Translate-Valenced-2.0.0-beta2.zip), then use **Install from file** in Valenced repository settings. Do not extract it or use GitHub's whole-repository “Download ZIP” as a plugin. ZIP-only installations have no automatic update source until you select a repository.
 
-Verificate: TypeScript strict, compilare folosind codul compilatorului oficial Valenced, structură ZIP, nouă teste automate pentru motor și contractul de lifecycle într-un runtime simulat.
+Plugin ID: `dariuss.quick-translate`. Rain/Kettu settings are not imported automatically.
 
-NU sunt verificate pe un dispozitiv: descoperirea modulelor private Discord, locul butonului, structura meniului de apăsare lungă, actualizarea ciornei și regenerarea rândurilor native ale mesajelor. Acestea necesită versiunea concretă Discord/Valenced și testare în aplicație. Testele simulate nu dovedesc compatibilitatea acestor module.
+## Features
 
-Nu am măsurat FPS, timpul de pornire sau consumul de memorie pe telefon. Fișierul compilat este mai mic decât cel vechi; aceasta nu reprezintă un benchmark de performanță.
+- Google Translate and DeepL, including personal DeepL Free API keys.
+- Separate incoming and outgoing languages and automatic source-language detection.
+- Translation panel with editable text, copying, draft replacement, and original-draft restoration with conversation/edit checks.
+- A Translate composer button and a Translate action in the message long-press menu, subject to Discord's private module compatibility.
+- Local message display below the original or in its place, without editing the message store's content in the renderer.
+- Per-conversation languages and up to six favorite languages.
+- Optional outgoing auto-translation. A translation error rejects sending instead of silently sending the original text.
+- Optional incoming auto-translation for new messages from other users in explicitly enabled, currently visible conversations.
+- Batch selection for up to 25 messages already loaded in the current conversation, without fetching chat history.
+- Local history (100 entries), saved message translations (300), and an in-memory result cache (200).
+- Protection for code, links, mentions, Discord emoji syntax, and selected terms. A response that damages a protected marker is rejected.
+- Serialized requests, deduplication, a bounded queue, timeouts, HTTP 429 cooldowns, and cancellation when stopped or cleared.
 
-Nu există cod Kotlin/Java/Objective-C sau căi Android în plugin. Este proiectat pentru runtime-ul comun JavaScript/React Native; compatibilitatea iOS nu a fost testată și nu este garantată doar prin absența codului nativ.
+## Differences from the old Rain plugin
 
-Google folosește un endpoint neoficial și poate refuza sau limita cererile. DeepL poate avea costuri/limite asociate contului. Nu s-au făcut cereri reale către furnizori în verificările automate. Textul și termenii protejați sunt procesate prin marcaje, însă serviciul primește restul textului. Cheia DeepL și istoricul sunt în stocarea locală a pluginului, fără criptare proprie.
+This beta does not yet provide complete feature parity:
 
-## Reconstruirea surselor
+- Draft translation uses **Use in draft** in the panel; it does not replace Send with a two-tap control.
+- The composer button has one position. Gift and other Discord buttons are left alone.
+- Incoming auto-translation only runs in the visible conversation.
+- Batch translation uses loaded messages without server-side history pagination.
+- History supports copying/deleting; jumping to the original message is not implemented.
+- There is no automatic DeepL-to-Google fallback. Choose the provider explicitly.
+- The cache stays in memory. History and message translations can persist according to the settings.
+- Chat translations use plain text nodes. Protected syntax is preserved as text, but rendering it as mentions, emoji, or Markdown within the translated section is not implemented. Panel colors work; chat colors depend on the renderer's support for node styling.
 
-Din folderul `QT` rulează comenzile de mai jos.
+## Verification and limitations
 
-Node 24 recomandat (minimum 22.18, pentru executarea TypeScript fără transpiler în teste).
+Verified: strict TypeScript, compilation with the official Valenced compiler source, ZIP structure, repository index generation, artifact hashes, and automated engine/lifecycle tests in a simulated runtime.
+
+Not device-tested: private Discord module discovery, composer placement, long-press menu structure, draft updates, and native message-row regeneration. Simulated tests cannot prove these integrations work on the target Discord build. No on-device FPS, startup, or memory benchmarks have been measured.
+
+The plugin has no Kotlin, Java, Objective-C, or Android-specific paths. It is designed for the shared JavaScript/React Native runtime. iOS compatibility still requires testing.
+
+Google uses an unofficial endpoint and may rate-limit or reject requests. DeepL has account-specific quotas and possible costs. Automated verification does not send live translation requests. Providers receive the text surrounding protected markers. The DeepL key and translation history are stored locally without plugin-specific encryption.
+
+## Build from source
+
+Use Node 24, or at least Node 22.18. From the `QT` folder:
 
 ```sh
 npm ci --legacy-peer-deps
@@ -66,10 +77,14 @@ npm run check
 npm test
 ```
 
-`npm test` reconstruiește mai întâi pluginul. ZIP-ul apare în `build/quick-translate.zip` și este copiat ca `Quick-Translate-Valenced-2.0.0-beta1.zip` lângă manifest. Fișierul compilat este copiat și în `index.js`.
+`npm test` rebuilds the plugin before running the tests. The build creates:
 
-Pentru instalarea beta deja construite, descarcă [ZIP-ul pluginului](https://github.com/dariussbezy/Quick-Translate/raw/refs/heads/codex/quick-translate-valenced-beta/QT/Quick-Translate-Valenced-2.0.0-beta1.zip). Nu folosi „Download ZIP” al întregului repository pentru instalare în Valenced.
+- `build/quick-translate.zip` and `Quick-Translate-Valenced-<version>.zip`;
+- `index.js`, the compiled script;
+- `index.json`, the repository index, including ZIP sizes and SHA-256 hashes.
 
-`tooling/official-cli/build.ts` este compilatorul oficial Valenced, inclus sub GPL, din commit-ul `9ea9f9bfc91319e2b18c6b1c9ac0b993f8600c1d`. Tipurile Valenced sunt fixate la commit-ul `c67dd726d1ec28b38d8ac93862fdd3b6029b1d29`.
+Keep previous versioned ZIPs available when publishing. Commit the rebuilt script, new ZIP, manifest, and generated index together. Builds use the official `generateIndex` function, rather than maintaining a handwritten repository schema.
 
-Surse documentare: https://valenced.app/docs/plugin-development/ și https://github.com/Valenced/valenced-community-plugins .
+The vendored official compiler and index generator are from Valenced plugin CLI commit `9ea9f9bfc91319e2b18c6b1c9ac0b993f8600c1d`, under the included GPL license. Valenced types are pinned to commit `c67dd726d1ec28b38d8ac93862fdd3b6029b1d29`.
+
+References: [Valenced plugin documentation](https://valenced.app/docs/plugin-development/) and [community plugins](https://github.com/Valenced/valenced-community-plugins).

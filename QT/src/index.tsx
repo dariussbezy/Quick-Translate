@@ -296,5 +296,7 @@ function Composer({ rt, open }: { rt: Runtime; open: () => void }) {
     use(): Settings | undefined;
   };
   const settings = storage.use();
-  return settings?.showButton ? <Action title="文" onPress={open} /> : null;
+  return settings?.showButton ? (
+    <Action title="Translate" onPress={open} />
+  ) : null;
 }
