@@ -235,7 +235,7 @@ function Tool({
     >
       <View style={styles.hero}>
         <Design.Text variant="heading-xl/bold" color="always-white">
-          文 Quick Translate
+          Quick Translate
         </Design.Text>
         <Design.Text variant="text-sm/normal" color="always-white">
           {message
@@ -471,10 +471,10 @@ export function Preferences({
     >
       <View style={styles.hero}>
         <Design.Text variant="heading-xl/bold" color="always-white">
-          文 Quick Translate
+          Quick Translate
         </Design.Text>
         <Design.Text variant="text-sm/normal" color="always-white">
-          Valenced · 2.0.0 beta · Built from scratch
+          Valenced · 2.0.0 beta 2 · Built from scratch
         </Design.Text>
       </View>
       <Action title="Open translator" onPress={() => runtime.open()} />
