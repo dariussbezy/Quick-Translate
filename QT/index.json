@@ -9,14 +9,14 @@
       "author": "dariuss",
       "icon": "LanguageIcon",
       "channels": {
-        "beta": "2.0.0-beta7",
-        "latest": "2.0.0-beta7"
+        "beta": "1.0.0-beta",
+        "latest": "1.0.0-beta"
       },
       "versions": {
-        "2.0.0-beta7": {
-          "url": "https://raw.githubusercontent.com/dariussbezy/Quick-Translate/refs/heads/main/QT/Quick-Translate-Valenced-2.0.0-beta7.zip",
-          "sha256": "706587b7683f92b2e4ef93c209b318a4325932509d38f825e4fa58a60e63b1ea",
-          "size": 34976,
+        "1.0.0-beta": {
+          "url": "https://raw.githubusercontent.com/dariussbezy/Quick-Translate/refs/heads/main/QT/Quick-Translate-Valenced-1.0.0-beta.zip",
+          "sha256": "a1c20ded24c4deabf62b094a5c926927db98f00b60bcfbc8c46d6159df7ed3e8",
+          "size": 35072,
           "dependencies": {
             "valenced.api": {
               "version": ">=1 <2"

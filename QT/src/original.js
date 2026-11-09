@@ -35,7 +35,7 @@ const ChannelStore = store("ChannelStore"),
 /* ------------------------------------------------------------------ */
 /* constants + settings store                                          */
 /* ------------------------------------------------------------------ */
-const BUILD = "v2.0.0-beta7";
+const BUILD = "1.0.0-beta";
 const ACCENT = "#8EA1FF";
 const MAX_TRANSLATIONS = 300;
 const MAX_CACHE = 200;
@@ -1496,16 +1496,28 @@ function providerLabel(provider) {
   return provider === "deepl" ? "DeepL" : "Google Translate";
 }
 function translationComplete(result) {
-  if (!String(qt.deeplApiKey || "").trim()) {
-    toast("Translated");
-    return;
-  }
+  const showProvider = !!String(qt.deeplApiKey || "").trim();
   const fallback = qt.provider === "deepl" && result.provider === "google";
-  toast(
-    "Translated with " +
+  let label = showProvider
+    ? "Translated with " +
       providerLabel(result.provider) +
-      (fallback ? " (DeepL fallback)" : ""),
-  );
+      (fallback ? " (DeepL fallback)" : "")
+    : "Translated";
+  if (!qt.showSourceLanguage) {
+    const raw = String(result.src || "")
+      .trim()
+      .replace(/_/g, "-")
+      .toLowerCase();
+    const code =
+      raw === "zh-tw" || raw === "zh-hant"
+        ? "zh-TW"
+        : raw === "zh" || raw === "zh-cn" || raw === "zh-hans"
+          ? "zh-CN"
+          : raw.split("-")[0];
+    const source = LANG_NAME.get(code);
+    if (source) label += (showProvider ? " · from " : " from ") + source;
+  }
+  toast(label);
 }
 function prettyToken(t) {
   if (/^<a?:[\w~]+:\d+>$/.test(t)) return t;
@@ -3286,23 +3298,6 @@ function TranslateButton(props) {
           h(
             RN.Text,
             {
-              key: "title",
-              style: {
-                color: paletteNow.text,
-                fontSize: 22,
-                fontWeight: "700",
-                marginBottom: 4,
-              },
-            },
-            messageRequest
-              ? messageRequest.messages?.length > 1
-                ? "Translate messages"
-                : "Translate message"
-              : "Translate draft",
-          ),
-          h(
-            RN.Text,
-            {
               key: "hint",
               style: { color: paletteNow.sub, fontSize: 14, marginBottom: 16 },
             },
@@ -3555,6 +3550,8 @@ function TranslateButton(props) {
             : null,
         ];
   const look = sendButtonLook || {};
+  // Balance the inactive icon between Emoji and Send without moving Send.
+  const sendOffset = props.position === "send" && !armed ? 6 : 0;
   const dim = translateSendMode
     ? {
         w: Number(look.width) || 36,
@@ -3569,8 +3566,8 @@ function TranslateButton(props) {
         h: 32,
         r: 10,
         bg: paletteNow.blurple,
-        mr: 0,
-        ml: props.position === "send" ? 0 : 5,
+        mr: sendOffset,
+        ml: props.position === "send" ? -sendOffset : 5,
         mv: 0,
       };
   return h(
@@ -3674,13 +3671,33 @@ function TranslateButton(props) {
                 RN.View,
                 {
                   style: {
-                    height: 38,
-                    marginBottom: 8,
+                    minHeight: 38,
+                    marginBottom: 4,
+                    flexShrink: 0,
                     flexDirection: "row",
                     alignItems: "center",
-                    justifyContent: "center",
+                    justifyContent: "flex-end",
                   },
                 },
+                panelPage === "main"
+                  ? h(
+                      RN.Text,
+                      {
+                        style: {
+                          flex: 1,
+                          marginRight: 12,
+                          color: paletteNow.text,
+                          fontSize: 22,
+                          fontWeight: "700",
+                        },
+                      },
+                      messageRequest
+                        ? messageRequest.messages?.length > 1
+                          ? "Translate messages"
+                          : "Translate message"
+                        : "Translate draft",
+                    )
+                  : null,
                 h(
                   RN.Pressable,
                   {
@@ -3689,9 +3706,7 @@ function TranslateButton(props) {
                     accessibilityLabel: "Close translate menu",
                     hitSlop: 10,
                     style: {
-                      position: "absolute",
-                      top: 0,
-                      right: 0,
+                      flexShrink: 0,
                       width: 38,
                       height: 38,
                       borderRadius: 19,
@@ -5500,7 +5515,7 @@ const originalPlugin = {
   description:
     "Translate incoming and outgoing messages with Google Translate or DeepL.",
   id: "quicktranslate",
-  version: "2.0.0-beta6",
+  version: "1.0.0-beta",
   start() {
     renderErrors = 0;
     pendingRequestCount = 0;

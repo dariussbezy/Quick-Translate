@@ -5,7 +5,7 @@
   "description": "Translate messages and drafts with Google or DeepL. Rewritten for Valenced.",
   "author": "dariuss",
   "icon": "LanguageIcon",
-  "version": "2.0.0-beta7",
+  "version": "1.0.0-beta",
   "dependencies": {
     "valenced.api": {
       "version": ">=1 <2"
