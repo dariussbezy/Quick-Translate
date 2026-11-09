@@ -1,0 +1,20 @@
+{
+  "format": 1,
+  "id": "dariuss.quick-translate",
+  "name": "Quick Translate",
+  "description": "Translate messages and drafts with Google or DeepL. Rewritten for Valenced.",
+  "author": "dariuss",
+  "icon": "LanguageIcon",
+  "version": "2.0.0-beta1",
+  "dependencies": {
+    "valenced.api": {
+      "version": ">=1.3 <2"
+    },
+    "discord": {
+      "version": ">=352.6 <352.7"
+    }
+  },
+  "dist": {
+    "script": "index.js"
+  }
+}
