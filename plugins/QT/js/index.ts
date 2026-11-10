@@ -1,3 +1,4 @@
+import { createElement } from "react";
 import originalPlugin, { useQuickTranslate } from "./original.js";
 import {
   startIntegration,
@@ -21,5 +22,5 @@ export default plugin<{ jsonStorage: Record<string, any> }>({
     originalPlugin.start();
     if (instance.startedLate) instance.requireReload();
   },
-  SettingsComponent: originalPlugin.settings,
+  SettingsComponent: () => createElement(originalPlugin.settings),
 });

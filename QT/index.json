@@ -1,7 +1,7 @@
 {
   "format": 1,
   "name": "Quick Translate",
-  "description": "Quick Translate plugins for Valenced. Beta builds for testing.",
+  "description": "Translate messages and drafts with Google or DeepL.",
   "plugins": {
     "dariuss.quick-translate": {
       "name": "Quick Translate",
@@ -13,9 +13,9 @@
       },
       "versions": {
         "1.0.0-beta": {
-          "url": "https://raw.githubusercontent.com/dariussbezy/Quick-Translate/refs/heads/main/QT/Quick-Translate-Valenced-1.0.0-beta.zip",
-          "sha256": "152acda72fe626972d3473663c7b9ee719860750bbc28b1e0cb88d2577116b96",
-          "size": 40295,
+          "url": "https://raw.githubusercontent.com/dariussbezy/Quick-Translate/refs/heads/main/pool/dariuss.quick-translate@1.0.0-beta.zip",
+          "sha256": "dabd3513a93d8d347b2abd1d765c35e43993d600613cdc21ead41cd8df188c1f",
+          "size": 38628,
           "dependencies": {
             "valenced.api": {
               "version": ">=1 <2"
