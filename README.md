@@ -1,5 +1,7 @@
 # Quick Translate for Valenced
 
+> **Development moved:** all plugins and themes are now maintained in [Valenced Plugins & Themes](https://github.com/dariussbezy/dariussbezy-Valenced-Plugins-Themes). Use the [single repository URL](https://raw.githubusercontent.com/dariussbezy/dariussbezy-Valenced-Plugins-Themes/main/index.json) for installation and updates. This repository remains available for historical links.
+
 Translate Discord messages and drafts with Google Translate or DeepL. Current version: **1.0.0-beta**.
 
 ## Features
@@ -24,7 +26,7 @@ Translate Discord messages and drafts with Google Translate or DeepL. Current ve
 In Valenced, open **Plugins → Advanced → Repository URL**, paste this address and add the repository:
 
 ```text
-https://raw.githubusercontent.com/dariussbezy/Quick-Translate/refs/heads/main/QT/index.json
+https://raw.githubusercontent.com/dariussbezy/dariussbezy-Valenced-Plugins-Themes/main/index.json
 ```
 
 Find **Quick Translate**, install it and enable it. Open the plugin's settings to choose your languages and translation service.
