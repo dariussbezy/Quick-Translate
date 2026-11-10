@@ -1,6 +1,6 @@
 # Quick Translate for Valenced
 
-> **Development moved:** all plugins and themes are now maintained in [Valenced Plugins & Themes](https://github.com/dariussbezy/dariussbezy-Valenced-Plugins-Themes). Use the [single repository URL](https://raw.githubusercontent.com/dariussbezy/dariussbezy-Valenced-Plugins-Themes/main/index.json) for installation and updates. This repository remains available for historical links.
+> Valenced test repository. The combined catalog is available from [dariussbezy's Plugins](https://github.com/dariussbezy/dariussbezy-Plugins).
 
 Translate Discord messages and drafts with Google Translate or DeepL. Current version: **1.0.0-beta**.
 
@@ -26,7 +26,7 @@ Translate Discord messages and drafts with Google Translate or DeepL. Current ve
 In Valenced, open **Plugins → Advanced → Repository URL**, paste this address and add the repository:
 
 ```text
-https://raw.githubusercontent.com/dariussbezy/dariussbezy-Valenced-Plugins-Themes/main/index.json
+https://raw.githubusercontent.com/dariussbezy/Quick-Translate/main/index.json
 ```
 
 Find **Quick Translate**, install it and enable it. Open the plugin's settings to choose your languages and translation service.
@@ -38,9 +38,3 @@ Translation sends the text being translated to the selected provider. DeepL requ
 When Voice Messages To Text requests fallback language detection, a language-only Google request processes up to 2,000 characters of the transcript. It does not create a translated message or saved history entry.
 
 Settings, saved translations, history and the DeepL key are stored locally through Valenced. You can turn off history, clear saved translation data, and remove your API key in the plugin settings.
-
-## Repository structure
-
-Sources use the [official Valenced plugin template](https://github.com/Valenced/valenced-plugin-template/tree/9a4f9187137a75d86fe552d0e594889a6e6fd7e5). The implementation is in [`plugins/QT/js`](plugins/QT/js), with shared configuration and the official plugin CLI at the repository root. `./gradlew packageAllPlugins` packages the plugin; `npm run publish:local` prepares the pool and both repository indexes. The `QT/index.json` installation URL remains supported. Artifacts stay on `main` and the beta channel.
-
-Install development dependencies with `bun install --frozen-lockfile` before running the root scripts. The compiler and SDK revisions are pinned in `package.json`.

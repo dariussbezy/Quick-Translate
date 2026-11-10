@@ -14,8 +14,8 @@
       "versions": {
         "1.0.0-beta": {
           "url": "https://raw.githubusercontent.com/dariussbezy/Quick-Translate/refs/heads/main/pool/dariuss.quick-translate@1.0.0-beta.zip",
-          "sha256": "dabd3513a93d8d347b2abd1d765c35e43993d600613cdc21ead41cd8df188c1f",
-          "size": 38628,
+          "sha256": "d40dde32c5521bd795ce55795e328a78aa24e08f400dee4bafb378fb8d3ee856",
+          "size": 36970,
           "dependencies": {
             "valenced.api": {
               "version": ">=1 <2"
