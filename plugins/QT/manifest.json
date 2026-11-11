@@ -5,14 +5,12 @@
   "description": "Translate messages and drafts with Google or DeepL.",
   "author": "dariuss",
   "icon": "LanguageIcon",
-  "version": "1.0.0-beta",
+  "version": "1.0.3-beta",
   "dependencies": {
     "valenced.api": {
       "version": ">=1 <2"
     },
-    "discord": {
-      "version": ">=352.6 <352.7"
-    }
+    "discord": {}
   },
   "dist": {
     "script": "index.js"

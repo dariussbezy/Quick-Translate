@@ -1,8 +1,6 @@
 # Quick Translate for Valenced
 
-> Valenced test repository. The combined catalog is available from [dariussbezy's Plugins](https://github.com/dariussbezy/dariussbezy-Plugins).
-
-Translate Discord messages and drafts with Google Translate or DeepL. Current version: **1.0.0-beta**.
+Translate Discord messages and drafts with Google Translate or DeepL. Current version: **1.0.3-beta**.
 
 ## Features
 

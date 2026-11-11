@@ -1,6 +1,6 @@
 {
   "name": "@dariuss/quick-translate",
-  "version": "1.0.0-beta",
+  "version": "1.0.3-beta",
   "private": true,
   "type": "module",
   "scripts": {

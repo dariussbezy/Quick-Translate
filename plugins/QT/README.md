@@ -1,6 +1,6 @@
 # Quick Translate for Valenced
 
-Translate Discord messages and drafts with Google Translate or DeepL. Current version: **1.0.0-beta**.
+Translate Discord messages and drafts with Google Translate or DeepL. Current version: **1.0.3-beta**.
 
 ## Features
 

@@ -3,13 +3,13 @@
   "description": "Translate messages and drafts with Google or DeepL.",
   "channels": {
     "dariuss.quick-translate": {
-      "beta": "1.0.0-beta"
+      "beta": "1.0.3-beta"
     }
   },
   "distribution": {
     "source": "plugins/QT",
     "directory": "QT",
-    "archive": "Quick-Translate-Valenced-1.0.0-beta.zip",
+    "archive": "Quick-Translate-Valenced-1.0.3-beta.zip",
     "repository": "dariussbezy/Quick-Translate"
   }
 }
