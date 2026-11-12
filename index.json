@@ -13,7 +13,7 @@
       },
       "versions": {
         "1.0.0-beta": {
-          "url": "https://raw.githubusercontent.com/dariussbezy/Quick-Translate/refs/heads/main/pool/dariuss.quick-translate@1.0.0-beta.zip",
+          "url": "https://raw.githubusercontent.com/dariussbezy/Quick-Translate/d0a43705caec3e15a23859629bd3ed18a78b093d/pool/dariuss.quick-translate@1.0.0-beta.zip",
           "sha256": "d40dde32c5521bd795ce55795e328a78aa24e08f400dee4bafb378fb8d3ee856",
           "size": 36970,
           "dependencies": {
@@ -26,9 +26,9 @@
           }
         },
         "1.0.3-beta": {
-          "url": "https://raw.githubusercontent.com/dariussbezy/Quick-Translate/refs/heads/main/pool/dariuss.quick-translate@1.0.3-beta.zip",
-          "sha256": "2210b81f03be6ab807ebb108a4b9aff20587413420dc3d048df70a2d1d681d8d",
-          "size": 36953,
+          "url": "https://raw.githubusercontent.com/dariussbezy/Quick-Translate/d0a43705caec3e15a23859629bd3ed18a78b093d/pool/dariuss.quick-translate@1.0.3-beta.zip",
+          "sha256": "97d7f7cde9932a3d1d8fc71c189076a83cf5066e0d7b1610fbe739b6da45e5ad",
+          "size": 37056,
           "dependencies": {
             "valenced.api": {
               "version": ">=1 <2"
