@@ -1,3 +1,4 @@
+import manifest from "../manifest.json";
 import { BottomSheet } from "@valenced/externals/gorhom";
 import { TranslationSheet } from "./translation-sheet";
 import { Design } from "@valenced/discord/design";
@@ -50,7 +51,7 @@ const ChannelStore = store("ChannelStore"),
 /* ------------------------------------------------------------------ */
 /* constants + settings store                                          */
 /* ------------------------------------------------------------------ */
-const BUILD = "1.0.2-beta";
+const BUILD = manifest.version;
 const ACCENT = "#8EA1FF";
 const MAX_TRANSLATIONS = 300;
 const MAX_CACHE = 200;
@@ -4311,7 +4312,7 @@ const originalPlugin = {
   description:
     "Translate incoming and outgoing messages with Google Translate or DeepL.",
   id: "quicktranslate",
-  version: "1.0.2-beta",
+  version: BUILD,
   start() {
     renderErrors = 0;
     pendingRequestCount = 0;
