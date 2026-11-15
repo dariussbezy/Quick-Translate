@@ -1,18 +1,18 @@
 {
-  "format": 1,
-  "id": "dariuss.quick-translate",
-  "name": "Quick Translate",
-  "description": "Translate messages and drafts with Google or DeepL.",
-  "author": "dariuss",
-  "icon": "LanguageIcon",
-  "version": "1.0.3-beta",
-  "dependencies": {
-    "valenced.api": {
-      "version": ">=1 <2"
-    },
-    "discord": {}
-  },
-  "dist": {
-    "script": "index.js"
-  }
+	"format": 1,
+	"id": "dariuss.quick-translate",
+	"name": "Quick Translate",
+	"description": "Translate messages and drafts with Google, Microsoft or DeepL.",
+	"author": "dariussbezy <908767091522420817> (https://github.com/dariussbezy \"GitHub\")",
+	"icon": "LanguageIcon",
+	"version": "2.1.0",
+	"dependencies": {
+		"valenced.api": {
+			"version": ">=1 <2"
+		},
+		"discord": {}
+	},
+	"dist": {
+		"script": "index.js"
+	}
 }

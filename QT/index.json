@@ -1,15 +1,16 @@
 {
   "format": 1,
   "name": "Quick Translate",
-  "description": "Translate messages and drafts with Google or DeepL.",
+  "description": "Translate messages and drafts with Google, Microsoft or DeepL.",
   "plugins": {
     "dariuss.quick-translate": {
       "name": "Quick Translate",
-      "description": "Translate messages and drafts with Google or DeepL.",
-      "author": "dariuss",
+      "description": "Translate messages and drafts with Google, Microsoft or DeepL.",
+      "author": "dariussbezy <908767091522420817> (https://github.com/dariussbezy \"GitHub\")",
       "icon": "LanguageIcon",
       "channels": {
-        "beta": "1.0.3-beta"
+        "beta": "2.1.0",
+        "latest": "2.1.0"
       },
       "versions": {
         "1.0.0-beta": {
@@ -29,6 +30,17 @@
           "url": "https://raw.githubusercontent.com/dariussbezy/Quick-Translate/d0a43705caec3e15a23859629bd3ed18a78b093d/pool/dariuss.quick-translate@1.0.3-beta.zip",
           "sha256": "97d7f7cde9932a3d1d8fc71c189076a83cf5066e0d7b1610fbe739b6da45e5ad",
           "size": 37056,
+          "dependencies": {
+            "valenced.api": {
+              "version": ">=1 <2"
+            },
+            "discord": {}
+          }
+        },
+        "2.1.0": {
+          "url": "https://raw.githubusercontent.com/dariussbezy/Quick-Translate/main/pool/dariuss.quick-translate@2.1.0.zip",
+          "sha256": "f253e903e9ff61be085292ea26a7403f79b80ce7fabd1d25e1a481c7be340c27",
+          "size": 27237,
           "dependencies": {
             "valenced.api": {
               "version": ">=1 <2"
