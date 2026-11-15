@@ -102,6 +102,16 @@
 				"useIterableCallbackReturn": {
 					"level": "off"
 				}
+			},
+			"correctness": {
+				"noReactNativeRawText": {
+					"level": "error",
+					"options": {
+						"skip": [
+							"Design.Text"
+						]
+					}
+				}
 			}
 		}
 	},
