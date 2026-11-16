@@ -40,11 +40,14 @@ const input: {
 	change: Change | null
 	instance: InputInstance | null
 	seen: number
+	/** The part of the draft the user has selected, if any. */
+	selection: { start: number; end: number } | null
 } = {
 	text: '',
 	change: null,
 	instance: null,
 	seen: 0,
+	selection: null,
 }
 let lastOriginal: { text: string; channelId: string | null } | null = null
 let lastChannelId: string | null = null
@@ -54,6 +57,17 @@ const refWrappers = new WeakMap<
 >()
 
 export const hasRestorableDraft = () => lastOriginal !== null
+
+/** The selected part of the draft, when the setting is on and the selection still fits the text. */
+function selectedRange(text: string) {
+	const range = input.selection
+	if (!getSettings().translateSelection || !range) return null
+	if (range.end <= range.start || range.end > text.length) return null
+	if (!text.slice(range.start, range.end).trim()) return null
+	return range
+}
+
+export const hasSelection = () => selectedRange(readInput()) !== null
 
 /* ----------------------------- per-chat languages ---------------------------- */
 
@@ -151,12 +165,30 @@ export function patchTextInput() {
 				}
 				if (holder) refWrappers.set(holder, wrapped)
 			}
+			const originalSelection =
+				typeof props.onSelectionChange === 'function'
+					? (props.onSelectionChange as (event: unknown) => void)
+					: null
 			return [
 				{
 					...props,
 					onChangeText: (text: string) => {
 						input.text = text
+						// Offsets of an earlier selection no longer match the new text.
+						input.selection = null
 						original?.(text)
+					},
+					onSelectionChange: (event: {
+						nativeEvent?: { selection?: { start?: number; end?: number } }
+					}) => {
+						const range = event?.nativeEvent?.selection
+						input.selection =
+							typeof range?.start === 'number' &&
+							typeof range.end === 'number' &&
+							range.end > range.start
+								? { start: range.start, end: range.end }
+								: null
+						originalSelection?.(event)
 					},
 				},
 				wrapped,
@@ -216,11 +248,13 @@ function writeInput(text: string) {
 		}
 	}
 	input.text = text
+	input.selection = null
 	return true
 }
 
 function resetInput() {
 	input.text = ''
+	input.selection = null
 	input.change = null
 	input.instance = null
 	input.seen = 0
@@ -262,8 +296,13 @@ export async function translateDraft(tl: string, sl: string) {
 		return false
 	}
 	const channelId = currentChannelId()
+	// With part of the draft selected, only that part is translated and the rest stays as typed.
+	const range = selectedRange(text)
+	const part = range ? text.slice(range.start, range.end) : text
+	const lead = range ? (/^\s*/.exec(part)?.[0] ?? '') : ''
+	const trail = range ? (/\s*$/.exec(part)?.[0] ?? '') : ''
 	try {
-		const result = await translate(text, tl, sl, { channelId })
+		const result = await translate(part.trim(), tl, sl, { channelId })
 		if (
 			!isRunning() ||
 			currentChannelId() !== channelId ||
@@ -279,12 +318,19 @@ export async function translateDraft(tl: string, sl: string) {
 			toast(`Already in ${languageName(tl)}`)
 			return false
 		}
-		if (!writeInput(result.text)) {
+		const next = range
+			? text.slice(0, range.start) +
+				lead +
+				result.text +
+				trail +
+				text.slice(range.end)
+			: result.text
+		if (!writeInput(next)) {
 			toast('Could not update the chat box; the original text is unchanged')
 			return false
 		}
 		lastOriginal = { text, channelId }
-		notifyTranslated(result)
+		notifyTranslated(result, !!range)
 		return true
 	} catch (error) {
 		toast(`Translation failed: ${(error as Error)?.message ?? error}`)

@@ -29,6 +29,10 @@ export interface MessageNode {
 	[key: string]: unknown
 }
 
+/** Normal messages (0) and replies (19) carry text the user wrote; the other types are system messages. */
+export const isTextMessageType = (type: number | undefined) =>
+	type == null || type === 0 || type === 19
+
 export interface Message {
 	id: string
 	channel_id?: string

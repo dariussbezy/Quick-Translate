@@ -1,5 +1,10 @@
 import { useSyncExternalStore } from 'react'
-import { DefaultSettings } from './shared'
+import {
+	completeOrder,
+	DEFAULT_GROQ_MODEL,
+	DefaultSettings,
+	RETIRED_GROQ_MODELS,
+} from './shared'
 import type { JsonStorage } from '@valenced/json-storage'
 import type { Settings } from './shared'
 
@@ -15,6 +20,17 @@ function normalize(data: Partial<Settings>): Settings {
 			(next as Record<string, unknown>)[key] = data[key]
 	if (next.anchor !== 'actions' && next.anchor !== 'send')
 		next.anchor = DefaultSettings.anchor
+	// Earlier versions stored a single service: keep a non-default choice first.
+	const legacy = (data as { provider?: unknown }).provider
+	next.providerOrder = completeOrder(
+		data.providerOrder === undefined &&
+			(legacy === 'microsoft' || legacy === 'deepl')
+			? [legacy]
+			: next.providerOrder,
+	)
+	// Groq retired the model an earlier version saved: use the current default instead.
+	if (RETIRED_GROQ_MODELS.includes(next.groqModel.trim()))
+		next.groqModel = DEFAULT_GROQ_MODEL
 	return next
 }
 

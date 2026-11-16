@@ -8,6 +8,7 @@ import { useWindowDimensions, View } from 'react-native'
 import {
 	getChatLanguages,
 	hasRestorableDraft,
+	hasSelection,
 	restoreOriginal,
 	saveChatLanguages,
 } from './composer'
@@ -136,7 +137,7 @@ function TranslateSheet({ request }: { request: Request }) {
 
 	const count = request.kind === 'messages' ? request.messages.length : 0
 	const hint = draft
-		? 'Translate this draft once. Your chat’s default language stays unchanged.'
+		? `Translate ${hasSelection() ? 'the selected text of this draft' : 'this draft'} once. Your chat’s default language stays unchanged.`
 		: `Choose languages, then translate ${count > 1 ? `${count} selected messages` : 'this message'} once.`
 
 	if (page !== 'main') {
@@ -259,7 +260,7 @@ function TranslateSheet({ request }: { request: Request }) {
 									onPress={activateOnce}
 								/>
 								<Design.Button
-									text={`Set ${languageName(target)} as usual`}
+									text={`Set ${languageName(target)} as usual${settings.rememberLanguagesPerChat ? ' for this chat' : ''}`}
 									size="sm"
 									variant="secondary"
 									onPress={setUsual}

@@ -1,8 +1,9 @@
+import { getAssetIdByName } from '@valenced/assets'
 import { TableRowAssetIcon } from '@valenced/components'
 import Page from '@valenced/components/Page'
 import { Design } from '@valenced/discord/design'
 import { useState } from 'react'
-import { ScrollView } from 'react-native'
+import { Linking, ScrollView } from 'react-native'
 import manifest from '../manifest.json'
 import { setArmed } from './draft'
 import { toast } from './env'
@@ -12,7 +13,14 @@ import {
 	setKeepTranslations,
 } from './messages'
 import { useGo } from './pages'
-import { COLOR_PRESETS, languageLabel, MAX_FAVORITES } from './shared'
+import {
+	COLOR_PRESETS,
+	DEFAULT_GROQ_MODEL,
+	DEFAULT_PROVIDER_ORDER,
+	languageLabel,
+	MAX_FAVORITES,
+	usableProviders,
+} from './shared'
 import { updateSettings, useSettings } from './store'
 import type { Anchor, Provider, Settings } from './shared'
 
@@ -50,6 +58,102 @@ function Switch({
 	)
 }
 
+const GROQ_KEYS_URL = 'https://console.groq.com/keys'
+const GROQ_STEPS = [
+	'1. Open console.groq.com and sign up. It is free, and Google or GitHub sign-in works.',
+	'2. Open API Keys in the menu and tap Create API Key. Give it any name.',
+	'3. Copy the key (it starts with gsk_) right away: Groq shows it only once.',
+	'4. Paste it into the Groq API key field above. Groq AI then joins the service list.',
+	'The free plan has rate limits: when they are reached, the next service in the list is used.',
+].join('\n')
+
+const SERVICES: Record<
+	Provider,
+	{ icon: string; label: string; hint: string }
+> = {
+	deepl: { icon: 'KeyIcon', label: 'DeepL', hint: 'Needs your DeepL API key' },
+	groq: {
+		icon: 'SparkleIcon',
+		label: 'Groq AI',
+		hint: 'AI translation, needs your Groq API key',
+	},
+	google: {
+		icon: 'LanguageIcon',
+		label: 'Google Translate',
+		hint: 'No key needed',
+	},
+	microsoft: {
+		icon: 'LanguageIcon',
+		label: 'Microsoft Translator',
+		hint: 'No key needed',
+	},
+}
+
+/** The services in the order they are tried, with arrows to move each one. */
+function ServiceOrder() {
+	const settings = useSettings()
+	const order = settings.providerOrder
+	const usable = usableProviders(settings)
+	const move = (index: number, by: number) => {
+		const next = [...order]
+		const [item] = next.splice(index, 1)
+		next.splice(index + by, 0, item)
+		updateSettings({ providerOrder: next })
+	}
+	return (
+		<Design.TableRowGroup
+			title="Translation services"
+			description="Tried from top to bottom: when one fails or is paused, the next one is used. A service that needs a key is skipped until you add it below."
+		>
+			{order.map((provider, index) => {
+				const info = SERVICES[provider]
+				const ready = usable.includes(provider)
+				return (
+					<Design.TableRow
+						key={provider}
+						icon={<TableRowAssetIcon name={info.icon} />}
+						label={`${index + 1}. ${info.label}`}
+						subLabel={
+							ready
+								? `${info.hint}${usable[0] === provider ? ' · used first' : ''}`
+								: `${info.hint} · skipped, add the key below`
+						}
+						trailing={
+							// custom: two small arrow buttons to reorder the list
+							<Design.Stack direction="horizontal" spacing={8}>
+								<Design.IconButton
+									icon={getAssetIdByName('ArrowSmallUpIcon')!}
+									size="sm"
+									variant="secondary"
+									disabled={index === 0}
+									accessibilityLabel={`Move ${info.label} up`}
+									onPress={() => move(index, -1)}
+								/>
+								<Design.IconButton
+									icon={getAssetIdByName('ArrowSmallDownIcon')!}
+									size="sm"
+									variant="secondary"
+									disabled={index === order.length - 1}
+									accessibilityLabel={`Move ${info.label} down`}
+									onPress={() => move(index, 1)}
+								/>
+							</Design.Stack>
+						}
+					/>
+				)
+			})}
+			<Design.TableRow
+				icon={<TableRowAssetIcon name="RefreshIcon" />}
+				label="Reset order"
+				subLabel="Services with a key first, then Google Translate, then Microsoft Translator."
+				onPress={() =>
+					updateSettings({ providerOrder: [...DEFAULT_PROVIDER_ORDER] })
+				}
+			/>
+		</Design.TableRowGroup>
+	)
+}
+
 const GUIDE: readonly (readonly [string, string, string])[] = [
 	[
 		'Translate a message',
@@ -59,12 +163,12 @@ const GUIDE: readonly (readonly [string, string, string])[] = [
 	[
 		'Translate a draft',
 		'PencilIcon',
-		'Tap the Translate button in the composer to translate what you are typing. With Translate before sending on, Send turns into Translate and a second tap sends. Hold the button for languages and options.',
+		'Tap the Translate button in the composer to translate what you are typing. Select part of the draft first to translate only that part. With Translate before sending on, Send turns into Translate and a second tap sends. Hold the button for languages and options.',
 	],
 	[
 		'Pick a service and languages',
 		'SettingsIcon',
-		'Choose Google Translate or Microsoft Translator (no key needed), or DeepL (your own API key), then set separate languages for your outgoing and incoming messages.',
+		'Order the services as you like: DeepL and Groq AI use your own API key, Google Translate and Microsoft Translator need none. When one fails, the next is used. Then set separate languages for your outgoing and incoming messages.',
 	],
 	[
 		'Automatic translation',
@@ -115,35 +219,12 @@ export default function SettingsComponent() {
 						))}
 					</Design.Stack>
 					{tab === 'general' && (
-						<Design.Stack spacing={8}>
-							<Design.TableRadioGroup<Provider>
-								title="Translation service"
-								value={settings.provider}
-								onChange={provider => updateSettings({ provider })}
-							>
-								<Design.TableRadioRow
-									value="google"
-									icon={<TableRowAssetIcon name="LanguageIcon" />}
-									label="Google Translate"
-									subLabel="No key required · selected by default"
-								/>
-								<Design.TableRadioRow
-									value="microsoft"
-									icon={<TableRowAssetIcon name="LanguageIcon" />}
-									label="Microsoft Translator"
-									subLabel="No key required · Google fallback"
-								/>
-								<Design.TableRadioRow
-									value="deepl"
-									icon={<TableRowAssetIcon name="KeyIcon" />}
-									label="DeepL"
-									subLabel="Uses your personal API key · Google fallback"
-								/>
-							</Design.TableRadioGroup>
-							{settings.provider === 'deepl' && (
+						<Design.Stack spacing={24}>
+							<ServiceOrder />
+							<Design.Stack spacing={8}>
 								<Design.TextInput
 									label="DeepL API key"
-									description="Stored in this plugin’s local settings. Free API keys ending in :fx are supported."
+									description="Optional. Stored in this plugin’s local settings. Free API keys ending in :fx are supported."
 									placeholder="Paste your API key"
 									secureTextEntry
 									defaultValue={settings.deeplApiKey}
@@ -151,7 +232,41 @@ export default function SettingsComponent() {
 										updateSettings({ deeplApiKey: deeplApiKey.trim() })
 									}
 								/>
-							)}
+								<Design.TextInput
+									label="Groq API key"
+									description="Optional. Enables AI translation with Groq. The text you translate is sent to Groq. The key is stored in this plugin’s local settings."
+									placeholder="gsk_…"
+									secureTextEntry
+									defaultValue={settings.groqApiKey}
+									onChange={groqApiKey =>
+										updateSettings({ groqApiKey: groqApiKey.trim() })
+									}
+								/>
+							</Design.Stack>
+							<Design.TableRowGroup title="Get a free Groq API key">
+								<Design.TableRow
+									icon={<TableRowAssetIcon name="CircleInformationIcon" />}
+									label="Steps"
+									subLabel={GROQ_STEPS}
+									subLabelLineClamp={12}
+								/>
+								<Design.TableRow
+									icon={<TableRowAssetIcon name="LinkIcon" />}
+									label="Open the Groq console"
+									subLabel="console.groq.com/keys"
+									arrow
+									onPress={() => void Linking.openURL(GROQ_KEYS_URL)}
+								/>
+							</Design.TableRowGroup>
+							<Design.TextInput
+								label="Groq model"
+								description={`The AI model used for translation. Leave ${DEFAULT_GROQ_MODEL} unless Groq retires it or you prefer another model from its model list.`}
+								placeholder={DEFAULT_GROQ_MODEL}
+								defaultValue={settings.groqModel}
+								onChange={groqModel =>
+									updateSettings({ groqModel: groqModel.trim() })
+								}
+							/>
 						</Design.Stack>
 					)}
 					{tab === 'languages' && (
@@ -226,6 +341,12 @@ export default function SettingsComponent() {
 									label="Show translate button"
 									subLabel="Show the translate control in the chat composer."
 									onChange={value => value || setArmed(null)}
+								/>
+								<Switch
+									name="translateSelection"
+									icon="PencilIcon"
+									label="Translate selected text only"
+									subLabel="When part of a draft is selected, translate just that part and leave the rest as typed."
 								/>
 								<Switch
 									name="draftBeforeSend"

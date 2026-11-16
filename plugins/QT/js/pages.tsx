@@ -34,6 +34,7 @@ import {
 	ProviderLabels,
 	resolveColor,
 	SOURCE_LANGUAGES,
+	usableProviders,
 } from './shared'
 import { getSettings, updateSettings, useSettings } from './store'
 import { translateWith } from './translate'
@@ -41,13 +42,9 @@ import type { ComponentType } from 'react'
 import type { Ctx } from './patching'
 import type { HistoryEntry, Provider } from './shared'
 
-/** The service used for the comparison: DeepL when it is set up, otherwise Microsoft; Google for the rest. */
+/** The service used for the comparison: the first usable one in the user's order other than the one used. */
 const otherProvider = (provider: Provider): Provider =>
-	provider !== 'google'
-		? 'google'
-		: getSettings().deeplApiKey.trim()
-			? 'deepl'
-			: 'microsoft'
+	usableProviders(getSettings()).find(item => item !== provider) ?? 'google'
 
 const ROUTE = 'DariussQuickTranslatePage'
 const MAX_PROTECTED = 100

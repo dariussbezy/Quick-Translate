@@ -113,6 +113,17 @@ function toNodes(
 		: []
 }
 
+const hasOurs = (nodes: MessageNode[]): boolean =>
+	nodes.some(
+		node =>
+			!!node?.__tr || (Array.isArray(node?.content) && hasOurs(node.content)),
+	)
+
+/** Whether the message still holds text or nodes this plugin added earlier. */
+const carriesOurs = (message: Message) =>
+	message.__trOut !== undefined ||
+	(Array.isArray(message.content) && hasOurs(message.content))
+
 function decorate(row: Row, hint: number | undefined) {
 	const message = row.message
 	if (!message || (row.type ?? hint ?? row.rowType) !== 1) return
@@ -192,16 +203,20 @@ export function patchRows(ctx: Ctx) {
 			) {
 				const row = Reflect.apply(original, this, args) as Row | undefined
 				if (!row?.message) return row
+				const hint = (args[0] as Row | undefined)?.rowType
+				const message = row.message
+				// This runs for every row Discord builds, so rows with nothing to show or undo are
+				// returned untouched, without copying the message.
+				if ((row.type ?? hint ?? row.rowType) !== 1) return row
+				const id = String(message.id)
+				const stale = consumeStale(id)
+				if (!stale && !hasTranslation(id) && !carriesOurs(message)) return row
 				// Never mutate a cached message owned by Discord.
-				const output: Row = { ...row, message: { ...row.message } }
+				const output: Row = { ...row, message: { ...message } }
 				try {
-					const hint = (args[0] as Row | undefined)?.rowType
 					decorate(output, hint)
-					if ((row.type ?? hint ?? row.rowType) === 1) {
-						const id = String(row.message.id)
-						// Native Discord skips unchanged records unless the row is explicitly rebound.
-						if (consumeStale(id) || hasTranslation(id)) output.changeType = 2
-					}
+					// Native Discord skips unchanged records unless the row is explicitly rebound.
+					if (stale || hasTranslation(id)) output.changeType = 2
 					return output
 				} catch (error) {
 					if (++errors >= 3) {

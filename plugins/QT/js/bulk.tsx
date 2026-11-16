@@ -3,7 +3,13 @@ import { Design } from '@valenced/discord/design'
 import { BottomSheet } from '@valenced/externals/gorhom'
 import { useEffect, useRef, useState } from 'react'
 import { ActivityIndicator, useWindowDimensions, View } from 'react-native'
-import { findByProps, messagesIn, toast, userName } from './env'
+import {
+	findByProps,
+	isTextMessageType,
+	messagesIn,
+	toast,
+	userName,
+} from './env'
 import { getTranslation, messageText } from './messages'
 import {
 	closeSheet,
@@ -27,7 +33,7 @@ const isTranslatable = (message: Message | undefined) =>
 	!!message?.id &&
 	typeof message.content === 'string' &&
 	!!message.content.trim() &&
-	(message.type == null || message.type === 0)
+	isTextMessageType(message.type)
 
 /** Unique translatable messages, newest first. */
 function merge(current: Message[], incoming: Message[]) {

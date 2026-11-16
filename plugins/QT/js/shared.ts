@@ -1,13 +1,32 @@
 import { Tokens } from '@valenced/discord/common/tokens'
 import type { WordRule } from './word-rules'
 
-export type Provider = 'google' | 'microsoft' | 'deepl'
+export type Provider = 'google' | 'microsoft' | 'deepl' | 'groq'
 
 export const ProviderLabels: Record<Provider, string> = {
 	google: 'Google',
 	microsoft: 'Microsoft',
 	deepl: 'DeepL',
+	groq: 'Groq AI',
 }
+
+/** Services that need the user's own API key; without one they are skipped. */
+export const KEYED_PROVIDERS: readonly Provider[] = ['deepl', 'groq']
+/** Services with an API key first, then the keyless ones. */
+export const DEFAULT_PROVIDER_ORDER: readonly Provider[] = [
+	'deepl',
+	'groq',
+	'google',
+	'microsoft',
+]
+export const DEFAULT_GROQ_MODEL = 'openai/gpt-oss-120b'
+/** Models Groq has retired or is retiring: a saved one is replaced by the default. */
+export const RETIRED_GROQ_MODELS: readonly string[] = [
+	'llama-3.3-70b-versatile',
+	'llama-3.1-8b-instant',
+	'qwen/qwen3.6-27b',
+	'moonshotai/kimi-k2-instruct',
+]
 export type Anchor = 'actions' | 'send'
 
 export interface ChatLanguages {
@@ -44,8 +63,12 @@ export interface SavedTranslation {
 }
 
 export interface Settings {
-	provider: Provider
+	/** Services in the order they are tried; the next one is used when one fails. */
+	providerOrder: Provider[]
 	deeplApiKey: string
+	groqApiKey: string
+	groqModel: string
+	translateSelection: boolean
 	targetOut: string
 	sourceOut: string
 	targetIn: string
@@ -72,8 +95,11 @@ export interface Settings {
 }
 
 export const DefaultSettings: Settings = {
-	provider: 'google',
+	providerOrder: [...DEFAULT_PROVIDER_ORDER],
 	deeplApiKey: '',
+	groqApiKey: '',
+	groqModel: DEFAULT_GROQ_MODEL,
+	translateSelection: true,
 	targetOut: 'en',
 	sourceOut: 'auto',
 	targetIn: 'en',
@@ -97,6 +123,34 @@ export const DefaultSettings: Settings = {
 	historyEntries: [],
 	keepMessageTranslations: true,
 	messageTranslations: [],
+}
+
+/** The services that can be used now, in order: a keyed service without its key is left out. */
+export function usableProviders(
+	settings: Pick<Settings, 'providerOrder' | 'deeplApiKey' | 'groqApiKey'>,
+): Provider[] {
+	const keys: Partial<Record<Provider, string>> = {
+		deepl: settings.deeplApiKey,
+		groq: settings.groqApiKey,
+	}
+	return settings.providerOrder.filter(
+		provider => !KEYED_PROVIDERS.includes(provider) || !!keys[provider]?.trim(),
+	)
+}
+
+/** Keeps known services once each and adds the missing ones at the end. */
+export function completeOrder(order: unknown): Provider[] {
+	const list = Array.isArray(order)
+		? order.filter(
+				(item, index): item is Provider =>
+					DEFAULT_PROVIDER_ORDER.includes(item as Provider) &&
+					order.indexOf(item) === index,
+			)
+		: []
+	return [
+		...list,
+		...DEFAULT_PROVIDER_ORDER.filter(provider => !list.includes(provider)),
+	]
 }
 
 export const MAX_FAVORITES = 5

@@ -1,6 +1,13 @@
 import { Dispatcher } from '@valenced/discord/common/flux'
-import { channelOf, currentUserId, getChannel, getMessage, toast } from './env'
-import { languageName } from './shared'
+import {
+	channelOf,
+	currentUserId,
+	getChannel,
+	getMessage,
+	isTextMessageType,
+	toast,
+} from './env'
+import { languageName, ProviderLabels, usableProviders } from './shared'
 import { getSettings, updateSettings } from './store'
 import { clearCaches, notifyTranslated, translate } from './translate'
 import type { Message, MessageNode } from './env'
@@ -148,7 +155,8 @@ export async function translateMessage(
 			source: result.src || 'auto',
 			target,
 			at: Date.now(),
-			provider: result.provider ?? getSettings().provider,
+			provider:
+				result.provider ?? usableProviders(getSettings())[0] ?? 'google',
 			autoIncoming,
 		})
 		trim(translations, MAX_TRANSLATIONS)
@@ -188,6 +196,7 @@ export async function translateMessages(
 	const services: Record<Provider, number> = {
 		deepl: 0,
 		google: 0,
+		groq: 0,
 		microsoft: 0,
 	}
 	for (const message of messages) {
@@ -201,12 +210,9 @@ export async function translateMessages(
 			services[current.provider]++
 		} else already++
 	}
-	const named = getSettings().provider !== 'google'
-	const used = [
-		named && services.google && `${services.google} Google Translate`,
-		named && services.microsoft && `${services.microsoft} Microsoft`,
-		named && services.deepl && `${services.deepl} DeepL`,
-	].filter(Boolean)
+	const used = (Object.keys(services) as Provider[])
+		.filter(provider => services[provider])
+		.map(provider => `${services[provider]} ${ProviderLabels[provider]}`)
 	toast(
 		`${translated} translated${used.length ? ` · ${used.join(' · ')}` : ''} · ${already} already in ${languageName(target)} · ${failed} failed`,
 	)
@@ -256,7 +262,7 @@ export function onIncomingMessage(event: {
 		!message.content.trim()
 	)
 		return
-	if (message.type != null && message.type !== 0) return
+	if (!isTextMessageType(message.type)) return
 	const id = String(message.id)
 
 	const me = currentUserId()
